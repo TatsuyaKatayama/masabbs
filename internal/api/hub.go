@@ -11,6 +11,15 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+const (
+	// Time allowed to write a message to the peer.
+	writeWait = 10 * time.Second
+	// Time allowed to read the next pong message from the peer.
+	pongWait = 60 * time.Second
+	// Send pings to peer with this period. Must be less than pongWait.
+	pingPeriod = (pongWait * 9) / 10
+)
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
@@ -23,6 +32,7 @@ var upgrader = websocket.Upgrader{
 type Client struct {
 	Conn    *websocket.Conn
 	AgentID string
+	send    chan []byte
 }
 
 // Hub manages active WebSocket connections and broadcasts NATS messages
@@ -66,17 +76,15 @@ func (h *Hub) Run(ctx context.Context) {
 		select {
 		case client := <-h.register:
 			h.mu.Lock()
-			// The single connection rule (409 Conflict) is enforced in ServeWS before upgrading.
-			// This is just mapping the connection.
 			h.clients[client.AgentID] = client
 			h.mu.Unlock()
 			log.Printf("New WebSocket client connected: %s", client.AgentID)
 
 		case client := <-h.unregister:
 			h.mu.Lock()
-			if c, ok := h.clients[client.AgentID]; ok && c.Conn == client.Conn {
+			if c, ok := h.clients[client.AgentID]; ok && c == client {
 				delete(h.clients, client.AgentID)
-				client.Conn.Close()
+				close(client.send)
 			}
 			h.mu.Unlock()
 			log.Printf("WebSocket client disconnected: %s", client.AgentID)
@@ -84,11 +92,10 @@ func (h *Hub) Run(ctx context.Context) {
 		case message := <-h.broadcast:
 			h.mu.Lock()
 			for agentID, client := range h.clients {
-				client.Conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-				err := client.Conn.WriteMessage(websocket.TextMessage, message)
-				if err != nil {
-					log.Printf("WebSocket write error for %s: %v", agentID, err)
-					client.Conn.Close()
+				select {
+				case client.send <- message:
+				default:
+					close(client.send)
 					delete(h.clients, agentID)
 				}
 			}
@@ -101,7 +108,7 @@ func (h *Hub) Run(ctx context.Context) {
 			}
 			h.mu.Lock()
 			for _, client := range h.clients {
-				client.Conn.Close()
+				close(client.send)
 			}
 			h.mu.Unlock()
 			return
@@ -109,16 +116,67 @@ func (h *Hub) Run(ctx context.Context) {
 	}
 }
 
+// readPump pumps messages from the websocket connection to the hub.
+func (c *Client) readPump(h *Hub) {
+	defer func() {
+		h.unregister <- c
+		c.Conn.Close()
+	}()
+	c.Conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.Conn.SetPongHandler(func(string) error { c.Conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
+	for {
+		_, _, err := c.Conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("error: %v", err)
+			}
+			break
+		}
+	}
+}
+
+// writePump pumps messages from the hub to the websocket connection.
+func (c *Client) writePump() {
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		c.Conn.Close()
+	}()
+	for {
+		select {
+		case message, ok := <-c.send:
+			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+
+			w, err := c.Conn.NextWriter(websocket.TextMessage)
+			if err != nil {
+				return
+			}
+			w.Write(message)
+
+			if err := w.Close(); err != nil {
+				return
+			}
+		case <-ticker.C:
+			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+
 // ServeWS handles WebSocket upgrade requests and enforces the single connection rule
 func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
-	// Extract agent_id from query parameters (e.g., /ws?agent_id=admin-1)
 	agentID := r.URL.Query().Get("agent_id")
 	if agentID == "" {
 		http.Error(w, "agent_id is required", http.StatusBadRequest)
 		return
 	}
 
-	// Enforce single connection rule (reject subsequent connections with 409)
 	h.mu.Lock()
 	if _, exists := h.clients[agentID]; exists {
 		h.mu.Unlock()
@@ -136,20 +194,11 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	client := &Client{
 		Conn:    conn,
 		AgentID: agentID,
+		send:    make(chan []byte, 256),
 	}
 
 	h.register <- client
 
-	// Keep-alive/Read loop
-	go func() {
-		defer func() {
-			h.unregister <- client
-		}()
-		for {
-			_, _, err := conn.ReadMessage()
-			if err != nil {
-				break
-			}
-		}
-	}()
+	go client.writePump()
+	go client.readPump(h)
 }
