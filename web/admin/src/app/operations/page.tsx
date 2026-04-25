@@ -45,8 +45,8 @@ export default function OperationsPage() {
   return (
     <div className="max-w-2xl mx-auto">
       <header className="mb-8 text-center">
-        <h1 className="text-2xl font-bold text-slate-900">System Operations</h1>
-        <p className="text-slate-500">Initiate new tasks and system-wide commands.</p>
+        <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">System Operations</h1>
+        <p className="mt-2 text-lg text-slate-700">Initiate new tasks and system-wide commands.</p>
       </header>
 
       <div className="bg-white shadow-sm ring-1 ring-slate-200 rounded-lg p-8">

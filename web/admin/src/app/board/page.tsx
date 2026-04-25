@@ -14,8 +14,8 @@ export default function BoardPage() {
   return (
     <div className="flex flex-col h-[calc(100vh-8rem)]">
       <header className="mb-8">
-        <h1 className="text-2xl font-bold text-slate-900">Message Board</h1>
-        <p className="text-slate-500">Real-time system communication and task updates.</p>
+        <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Message Board</h1>
+        <p className="mt-2 text-lg text-slate-700">Real-time system communication and task updates.</p>
       </header>
 
       <div className="flex-1 overflow-y-auto bg-white shadow-sm ring-1 ring-slate-200 rounded-lg p-4 space-y-4">

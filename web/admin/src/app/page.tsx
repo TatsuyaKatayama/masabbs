@@ -21,8 +21,8 @@ export default function Home() {
   return (
     <div>
       <header className="mb-8">
-        <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
-        <p className="text-slate-500">Welcome to the MASABBS administration console.</p>
+        <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Dashboard</h1>
+        <p className="mt-2 text-lg text-slate-700">Welcome to the MASABBS administration console.</p>
       </header>
 
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">

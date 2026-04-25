@@ -13,8 +13,8 @@ export default function AgentsPage() {
     <div>
       <header className="mb-8 flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Agents</h1>
-          <p className="text-slate-500">Monitor and manage all autonomous agents in the system.</p>
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Agents</h1>
+          <p className="mt-2 text-lg text-slate-700">Monitor and manage all autonomous agents in the system.</p>
         </div>
         <button className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 transition-colors">
           Add Agent
