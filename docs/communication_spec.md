@@ -1,6 +1,6 @@
-# Communication Specification v1.0.0
+# Communication Specification v1.0.1
 
-このドキュメントは、masabbs における NATS サブジェクト階層、メッセージフォーマット、および JetStream の動作設定を定義します。
+このドキュメントは、masabbs における NATS サブジェクト階層、メッセージフォーマット、JetStream 設定、および接続制限を定義します。
 
 ## 1. NATS サブジェクト階層
 
@@ -26,7 +26,7 @@
 ```json
 {
   "type": "task | offer | assign | result | status | event | shutdown",
-  "thread_id": "ULID (optional)",
+  "thread_id": "ULID",
   "from": "agent_id",
   "to": ["agent_id"],
   "observers": ["agent_id"],
@@ -59,20 +59,35 @@
 
 ## 4. NATS JetStream 設定
 
-- **Stream Name**: `board` (Subject: `board.>`)
+- **Stream Name**: `board_tasks`, `board_status`, `board_events`, `board_shutdown`
 - **Retention Policy**:
-  - `board.shutdown.*` は `WorkQueue` (消費後削除)
+  - `board_shutdown` は `WorkQueue` (消費後削除)
   - その他は `Limits`
 - **AckPolicy**: `AckExplicit`
-  - メッセージの確実な処理を保証するため、エージェントは処理完了後に必ず ACK を返す必要があります。
-- **Durable Name**: `{role}-{agent_id}`
-  - 例: `worker-agent_b`
-  - エージェント再接続時に、未処理のメッセージをここから再開します。
+- **Durable Name**: `server-archiver-{stream_name}` (サーバー用), `{role}-{agent_id}` (エージェント用)
 
 ---
 
-## 5. ID (ULID) 生成ルール
+## 5. WebSocket 接続制限 (Admin UI 専用)
+
+- **単一接続ルール**: 同一 `agent_id` からの WebSocket 接続は **1 本のみ**許可されます。
+- **重複時の挙動**: 既にアクティブなセッションがある状態で再接続を試みた場合、サーバーは **HTTP 409 Conflict** を返し、後続の接続を拒否します。既存のセッションは維持されます。
+
+---
+
+## 6. Rate Limit (NATS サーバーレベル)
+
+エージェントの暴走を防ぐため、以下の制限が適用されます。
+
+| 対象 | 上限 | ウィンドウ | バースト許容 | 超過時の挙動 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Publish (1接続あたり)** | 60 msg | 1分 | 20 msg/秒 | 破棄・警告 |
+| **Publish (厳格モード)** | 5 msg/秒 | - | 連続超過で遮断 | 10秒間 publish ブロック |
+
+---
+
+## 7. ID (ULID) 生成ルール
 
 1. **基本ルール**: サーバーが `POST /threads` エンドポイントで生成し、エージェントへ返却します。
-2. **子タスク (派生)**: エージェントが自律的に生成して良い。その際、必ず `parent_thread_id` を付与して NATS へ publish します。
-3. **衝突回避**: ULID の特性および `parent_thread_id` による階層化により、分散環境での衝突リスクを許容範囲内として扱います。
+2. **形式の厳格化**: 全ての `thread_id` は必ず **ULID 形式**でなければなりません。エージェントが独自に生成した ID は拒否されます。
+3. **子タスク (派生)**: エージェントが子タスクを作成する場合も、サーバーの API を通じて `thread_id` を取得することを強く推奨します。
