@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/TatsuyaKatayama/masabbs/internal/auth"
 	"github.com/TatsuyaKatayama/masabbs/internal/models"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
@@ -14,8 +15,9 @@ import (
 )
 
 type Archiver struct {
-	DB *pgxpool.Pool
-	JS jetstream.JetStream
+	DB   *pgxpool.Pool
+	JS   jetstream.JetStream
+	Auth *auth.Provider
 }
 
 // Start runs the archiver to consume messages from multiple streams
@@ -62,7 +64,14 @@ func (a *Archiver) processMessage(msg jetstream.Msg) {
 	var env models.MessageEnvelope
 	if err := json.Unmarshal(msg.Data(), &env); err != nil {
 		log.Printf("Archiver failed to parse message: %v", err)
-		msg.Ack() // Ack bad JSON to avoid poison pill
+		msg.Ack()
+		return
+	}
+
+	// Safety check: Is this agent blocked?
+	if a.Auth != nil && a.Auth.IsRevoked(env.From) {
+		log.Printf("Archiver: Dropping message from revoked agent %s", env.From)
+		msg.Ack()
 		return
 	}
 

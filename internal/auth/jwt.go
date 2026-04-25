@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/nats-io/jwt/v2"
@@ -12,10 +13,12 @@ type Provider struct {
 	OperatorKey nkeys.KeyPair
 	AccountKey  nkeys.KeyPair
 	AccountJWT  string
+	revocations map[string]time.Time // AgentID -> Expiry
+	pubKeys     map[string]string    // AgentID -> UserPubKey
+	mu          sync.RWMutex
 }
 
 // NewProvider initializes the NATS Operator and Account for the system.
-// In a real production system, these keys should be loaded from secure storage.
 func NewProvider() (*Provider, error) {
 	// Create Operator
 	opKey, err := nkeys.CreateOperator()
@@ -47,6 +50,8 @@ func NewProvider() (*Provider, error) {
 		OperatorKey: opKey,
 		AccountKey:  accKey,
 		AccountJWT:  accJWT,
+		revocations: make(map[string]time.Time),
+		pubKeys:     make(map[string]string),
 	}, nil
 }
 
@@ -63,6 +68,10 @@ func (p *Provider) GenerateAgentCredentials(agentID, role string) (*Credentials,
 		return nil, fmt.Errorf("failed to create user key: %w", err)
 	}
 	userPubKey, _ := userKey.PublicKey()
+
+	p.mu.Lock()
+	p.pubKeys[agentID] = userPubKey
+	p.mu.Unlock()
 
 	userClaims := jwt.NewUserClaims(userPubKey)
 	userClaims.Name = agentID
@@ -103,14 +112,14 @@ func (p *Provider) GenerateAgentCredentials(agentID, role string) (*Credentials,
 	}, nil
 }
 
-// GenerateExpiredCredentials generates a JWT that is already expired for testing (UT-AUTH-105).
+// GenerateExpiredCredentials generates a JWT that is already expired for testing.
 func (p *Provider) GenerateExpiredCredentials(agentID string) (*Credentials, error) {
 	userKey, _ := nkeys.CreateUser()
 	userPubKey, _ := userKey.PublicKey()
 
 	userClaims := jwt.NewUserClaims(userPubKey)
 	userClaims.Name = agentID
-	userClaims.Expires = time.Now().Add(-1 * time.Hour).Unix() // Expired 1 hour ago
+	userClaims.Expires = time.Now().Add(-1 * time.Hour).Unix()
 
 	userJWT, _ := userClaims.Encode(p.AccountKey)
 	seed, _ := userKey.Seed()
@@ -122,7 +131,7 @@ func (p *Provider) GenerateExpiredCredentials(agentID string) (*Credentials, err
 	}, nil
 }
 
-// GenerateInvalidSignatureCredentials generates a JWT signed by a different (invalid) account key (UT-AUTH-106).
+// GenerateInvalidSignatureCredentials generates a JWT signed by a different (invalid) account key.
 func (p *Provider) GenerateInvalidSignatureCredentials(agentID string) (*Credentials, error) {
 	userKey, _ := nkeys.CreateUser()
 	userPubKey, _ := userKey.PublicKey()
@@ -142,6 +151,40 @@ func (p *Provider) GenerateInvalidSignatureCredentials(agentID string) (*Credent
 	}, nil
 }
 
-func (p *Provider) RevokeAgent(agentID string) error {
-	return nil
+// RevokeAgent temporarily blocks an agent.
+func (p *Provider) RevokeAgent(agentID string, duration time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.revocations[agentID] = time.Now().Add(duration)
+}
+
+// IsRevoked checks if an agent is currently blocked.
+func (p *Provider) IsRevoked(agentID string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	expiry, ok := p.revocations[agentID]
+	if !ok {
+		return false
+	}
+	if time.Now().After(expiry) {
+		return false
+	}
+	return true
+}
+
+// GetRevocationList returns a map of Public Key to Revocation Time for NATS Account Claims.
+func (p *Provider) GetRevocationList() map[string]int64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	
+	revs := make(map[string]int64)
+	now := time.Now()
+	for id, expiry := range p.revocations {
+		if expiry.After(now) {
+			if pubKey, ok := p.pubKeys[id]; ok {
+				revs[pubKey] = now.Unix()
+			}
+		}
+	}
+	return revs
 }
