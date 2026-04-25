@@ -11,12 +11,8 @@ env:
 
 jobs:
   test:
-    name: Run Tests (UT & IT)
+    name: Run All Tests (UT, IT, E2E)
     runs-on: ubuntu-latest
-    # If masabbs is the root of the repository, uncomment the following line and remove 'working-directory' from steps:
-    # defaults:
-    #   run:
-    #     working-directory: ./
     
     steps:
       - name: Checkout code
@@ -25,8 +21,6 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          # If the repo root is 'masabbs', this should be 'go.mod'
-          # If 'masabbs' is a folder inside the repo, this should be 'masabbs/go.mod'
           go-version-file: 'go.mod'
           cache-dependency-path: 'go.sum'
 

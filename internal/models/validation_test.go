@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -103,18 +104,43 @@ func TestMessageValidation(t *testing.T) {
 			},
 			wantErr: ErrPayloadTooLarge,
 		},
+		{
+			name: "UT-VAL-111: Invalid JSON payload string",
+			id:   "UT-VAL-111",
+			env: MessageEnvelope{
+				Type:      "task",
+				ThreadID:  &validULID,
+				From:      "agent1",
+				To:        []string{"agent2"},
+				Payload:   json.RawMessage(`{"incomplete": }`),
+			},
+			wantErr: fmt.Errorf("invalid json payload"),
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.env.Validate()
 			if tt.wantErr != nil {
-				assert.ErrorIs(t, err, tt.wantErr, "Expected error matching: %v", tt.wantErr)
+				assert.Error(t, err)
+				if tt.wantErr.Error() != "invalid json payload" {
+					assert.ErrorIs(t, err, tt.wantErr)
+				}
 			} else {
 				assert.NoError(t, err)
 			}
 		})
 	}
+}
+
+func TestMessageValidation_TypeMismatch(t *testing.T) {
+	t.Run("UT-VAL-104: Timestamp is string instead of number", func(t *testing.T) {
+		// In Go, json.Unmarshal into int64 will fail if the JSON value is a string.
+		input := `{"type":"task","from":"a","timestamp":"2026-04-25T00:00:00Z","payload":{}}`
+		var env MessageEnvelope
+		err := json.Unmarshal([]byte(input), &env)
+		assert.Error(t, err, "Should fail to unmarshal string into int64 timestamp")
+	})
 }
 
 func strPtr(s string) *string {

@@ -55,6 +55,14 @@ func TestStateTransitions(t *testing.T) {
 			wantErr:      ErrInvalidStateTransition,
 			expected:     StateAssigned,
 		},
+		{
+			name:         "UT-SM-104: result arrives after timeout (error -> done)",
+			id:           "UT-SM-104",
+			initialState: StateError,
+			transitions:  []string{StateDone},
+			wantErr:      ErrInvalidStateTransition,
+			expected:     StateError,
+		},
 	}
 
 	for _, tt := range tests {

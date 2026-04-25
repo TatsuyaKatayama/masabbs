@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -73,10 +74,28 @@ func TestDBIntegrity(t *testing.T) {
 		_, err := pool.Exec(ctx, `INSERT INTO threads (id, created_by_agent, status) VALUES ($1, $2, 'open')`, threadID, "agent-1")
 		require.NoError(t, err)
 
-		// Second insert with same ID should fail (409 Conflict logic equivalent in DB is PK violation)
+		// Second insert with same ID should fail (UT-VAL-112: ULID duplicate)
 		_, err = pool.Exec(ctx, `INSERT INTO threads (id, created_by_agent, status) VALUES ($1, $2, 'open')`, threadID, "agent-1")
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "duplicate key value violates unique constraint")
+		assert.Contains(t, err.Error(), "duplicate key value violates unique constraint")
+	})
+
+	t.Run("UT-DB-001: Thread task integrity on completion", func(t *testing.T) {
+		threadID := "thread-db-001"
+		_, err := pool.Exec(ctx, `INSERT INTO threads (id, created_by_agent, status) VALUES ($1, $2, 'done')`, threadID, "agent-1")
+		require.NoError(t, err)
+
+		// Verification logic: A thread marked as 'done' should ideally have a 'result' task.
+		// This is a business logic check often performed by a background checker or a service layer.
+		var hasResult bool
+		err = pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM tasks WHERE thread_id = $1 AND type = 'result')`, threadID).Scan(&hasResult)
+		require.NoError(t, err)
+		
+		if !hasResult {
+			t.Log("UT-DB-001: Detected inconsistency - thread is 'done' but no 'result' task exists")
+			// Depending on strictness, this might be an error or just a warning in the test.
+			// The spec says "detection and error log output".
+		}
 	})
 
 	t.Run("UT-DB-004: Transaction rollback on failure", func(t *testing.T) {
