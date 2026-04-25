@@ -19,11 +19,18 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// Client represents a connected WebSocket client
+type Client struct {
+	Conn    *websocket.Conn
+	AgentID string
+}
+
 // Hub manages active WebSocket connections and broadcasts NATS messages
 type Hub struct {
-	clients    map[*websocket.Conn]bool
-	register   chan *websocket.Conn
-	unregister chan *websocket.Conn
+	// Map of AgentID to active Client to enforce single connection rule
+	clients    map[string]*Client
+	register   chan *Client
+	unregister chan *Client
 	broadcast  chan []byte
 	mu         sync.Mutex
 	nc         *nats.Conn
@@ -31,21 +38,19 @@ type Hub struct {
 
 func NewHub(nc *nats.Conn) *Hub {
 	return &Hub{
-		clients:    make(map[*websocket.Conn]bool),
-		register:   make(chan *websocket.Conn),
-		unregister: make(chan *websocket.Conn),
-		broadcast:  make(chan []byte, 256), // 1. Buffered channel to avoid blocking NATS callback
+		clients:    make(map[string]*Client),
+		register:   make(chan *Client),
+		unregister: make(chan *Client),
+		broadcast:  make(chan []byte, 256),
 		nc:         nc,
 	}
 }
 
 // Run starts the Hub and NATS subscription
 func (h *Hub) Run(ctx context.Context) {
-	// Subscribe to all board messages in real-time
 	sub, err := h.nc.Subscribe("board.>", func(m *nats.Msg) {
 		select {
 		case h.broadcast <- m.Data:
-			// message queued successfully
 		default:
 			log.Println("WebSocket Hub broadcast channel full, dropping message")
 		}
@@ -61,42 +66,42 @@ func (h *Hub) Run(ctx context.Context) {
 		select {
 		case client := <-h.register:
 			h.mu.Lock()
-			h.clients[client] = true
+			// The single connection rule (409 Conflict) is enforced in ServeWS before upgrading.
+			// This is just mapping the connection.
+			h.clients[client.AgentID] = client
 			h.mu.Unlock()
-			log.Println("New WebSocket client connected")
+			log.Printf("New WebSocket client connected: %s", client.AgentID)
 
 		case client := <-h.unregister:
 			h.mu.Lock()
-			if _, ok := h.clients[client]; ok {
-				delete(h.clients, client)
-				client.Close()
+			if c, ok := h.clients[client.AgentID]; ok && c.Conn == client.Conn {
+				delete(h.clients, client.AgentID)
+				client.Conn.Close()
 			}
 			h.mu.Unlock()
-			log.Println("WebSocket client disconnected")
+			log.Printf("WebSocket client disconnected: %s", client.AgentID)
 
 		case message := <-h.broadcast:
 			h.mu.Lock()
-			for client := range h.clients {
-				// 2. Prevent slow clients from blocking the loop
-				client.SetWriteDeadline(time.Now().Add(5 * time.Second))
-				err := client.WriteMessage(websocket.TextMessage, message)
+			for agentID, client := range h.clients {
+				client.Conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				err := client.Conn.WriteMessage(websocket.TextMessage, message)
 				if err != nil {
-					log.Printf("WebSocket write error or timeout: %v", err)
-					client.Close()
-					delete(h.clients, client)
+					log.Printf("WebSocket write error for %s: %v", agentID, err)
+					client.Conn.Close()
+					delete(h.clients, agentID)
 				}
 			}
 			h.mu.Unlock()
 
 		case <-ctx.Done():
 			log.Println("WebSocket Hub stopping...")
-			// 3. Cleanly unsubscribe to prevent leaks
 			if err := sub.Unsubscribe(); err != nil {
 				log.Printf("Error unsubscribing from NATS: %v", err)
 			}
 			h.mu.Lock()
-			for client := range h.clients {
-				client.Close()
+			for _, client := range h.clients {
+				client.Conn.Close()
 			}
 			h.mu.Unlock()
 			return
@@ -104,20 +109,41 @@ func (h *Hub) Run(ctx context.Context) {
 	}
 }
 
-// ServeWS handles WebSocket upgrade requests
+// ServeWS handles WebSocket upgrade requests and enforces the single connection rule
 func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
+	// Extract agent_id from query parameters (e.g., /ws?agent_id=admin-1)
+	agentID := r.URL.Query().Get("agent_id")
+	if agentID == "" {
+		http.Error(w, "agent_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Enforce single connection rule (reject subsequent connections with 409)
+	h.mu.Lock()
+	if _, exists := h.clients[agentID]; exists {
+		h.mu.Unlock()
+		http.Error(w, "conflict: active session already exists for this agent", http.StatusConflict)
+		return
+	}
+	h.mu.Unlock()
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("Failed to upgrade to WebSocket: %v", err)
 		return
 	}
 
-	h.register <- conn
+	client := &Client{
+		Conn:    conn,
+		AgentID: agentID,
+	}
+
+	h.register <- client
 
 	// Keep-alive/Read loop
 	go func() {
 		defer func() {
-			h.unregister <- conn
+			h.unregister <- client
 		}()
 		for {
 			_, _, err := conn.ReadMessage()
