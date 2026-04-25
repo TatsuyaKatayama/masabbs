@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/TatsuyaKatayama/masabbs/internal/api"
+	"github.com/TatsuyaKatayama/masabbs/internal/auth"
 	"github.com/TatsuyaKatayama/masabbs/internal/nats"
 	"github.com/TatsuyaKatayama/masabbs/internal/storage"
 	"github.com/TatsuyaKatayama/masabbs/internal/worker"
@@ -20,9 +21,10 @@ import (
 
 // App holds all application dependencies
 type App struct {
-	DB      *pgxpool.Pool
-	NATS    *nats.Client
-	Storage *storage.Client
+	DB           *pgxpool.Pool
+	NATS         *nats.Client
+	Storage      *storage.Client
+	AuthProvider *auth.Provider
 }
 
 func main() {
@@ -37,6 +39,11 @@ func main() {
 
 	// 2. Initialize Dependencies
 	ctx := context.Background()
+
+	authProvider, err := auth.NewProvider()
+	if err != nil {
+		log.Fatalf("Unable to initialize auth provider: %v\n", err)
+	}
 
 	dbPool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
@@ -62,9 +69,10 @@ func main() {
 	}
 
 	app := &App{
-		DB:      dbPool,
-		NATS:    natsClient,
-		Storage: storageClient,
+		DB:           dbPool,
+		NATS:         natsClient,
+		Storage:      storageClient,
+		AuthProvider: authProvider,
 	}
 
 	// Start Archiver in the background
@@ -98,7 +106,7 @@ func main() {
 	})
 
 	// Register actual API routes
-	api.RegisterRoutes(e, app.DB, app.NATS, app.Storage, hub)
+	api.RegisterRoutes(e, app.DB, app.NATS, app.Storage, hub, app.AuthProvider)
 
 	// 4. Start Server
 	go func() {

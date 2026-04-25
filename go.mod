@@ -8,12 +8,12 @@ require (
 	github.com/labstack/echo/v4 v4.15.1
 	github.com/minio/madmin-go/v3 v3.0.110
 	github.com/minio/minio-go/v7 v7.0.100
+	github.com/nats-io/jwt/v2 v2.8.1
 	github.com/nats-io/nats.go v1.51.0
 	github.com/nats-io/nkeys v0.4.15
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.42.0
-	github.com/testcontainers/testcontainers-go/modules/nats v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 )
 

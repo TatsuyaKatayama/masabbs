@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/TatsuyaKatayama/masabbs/internal/auth"
 	"github.com/TatsuyaKatayama/masabbs/internal/models"
 	"github.com/TatsuyaKatayama/masabbs/internal/nats"
 	"github.com/TatsuyaKatayama/masabbs/internal/storage"
@@ -15,23 +16,27 @@ import (
 )
 
 type Handler struct {
-	DB      *pgxpool.Pool
-	NATS    *nats.Client
-	Storage *storage.Client
+	DB           *pgxpool.Pool
+	NATS         *nats.Client
+	Storage      *storage.Client
+	AuthProvider *auth.Provider
 }
 
 // RegisterRoutes sets up all API endpoints
-func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc *storage.Client, hub *Hub) {
+func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc *storage.Client, hub *Hub, authProvider *auth.Provider) {
 	h := &Handler{
-		DB:      db,
-		NATS:    nc,
-		Storage: sc,
+		DB:           db,
+		NATS:         nc,
+		Storage:      sc,
+		AuthProvider: authProvider,
 	}
 
 	api := e.Group("/api/v1")
 	api.POST("/threads", h.CreateThread)
+	api.POST("/agents/:id/credentials", h.GenerateCredentials)
 
 	// WebSocket for Admin UI
+
 	e.GET("/ws", func(c echo.Context) error {
 		hub.ServeWS(c.Response(), c.Request())
 		return nil
@@ -117,4 +122,26 @@ func (h *Handler) CreateThread(c echo.Context) error {
 		ThreadID: threadID,
 		InputDir: inputDir,
 	})
+}
+
+func (h *Handler) GenerateCredentials(c echo.Context) error {
+	agentID := c.Param("id")
+	if agentID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "agent id is required"})
+	}
+
+	// Verify agent exists in DB and get its role
+	var role string
+	err := h.DB.QueryRow(c.Request().Context(), "SELECT role FROM agents WHERE id = $1", agentID).Scan(&role)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent not found"})
+	}
+
+	creds, err := h.AuthProvider.GenerateAgentCredentials(agentID, role)
+	if err != nil {
+		c.Logger().Errorf("failed to generate credentials: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to generate credentials"})
+	}
+
+	return c.JSON(http.StatusCreated, creds)
 }
