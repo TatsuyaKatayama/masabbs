@@ -22,8 +22,8 @@ export default function Sidebar() {
 
   return (
     <div className="flex h-full w-64 flex-col bg-slate-900 text-white">
-      <div className="flex h-16 items-center justify-center border-b border-slate-800">
-        <h1 className="text-xl font-bold tracking-wider text-indigo-400">MASABBS ADMIN</h1>
+      <div className="flex h-16 items-center justify-center border-b border-slate-800 bg-slate-950">
+        <h1 className="text-xl font-black tracking-wider text-white drop-shadow-md">MASABBS ADMIN</h1>
       </div>
       <nav className="flex-1 space-y-1 px-2 py-4">
         {navigation.map((item) => {

@@ -66,14 +66,14 @@ export default function OperationsPage() {
 
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
-            <label htmlFor="command" className="block text-sm font-medium text-slate-700">
+            <label htmlFor="command" className="block text-sm font-medium text-slate-800">
               Command / Task Instruction
             </label>
             <textarea
               id="command"
               rows={4}
               required
-              className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-3 border"
+              className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-3 border bg-white text-slate-900 placeholder-slate-400"
               placeholder="Describe the task for agents..."
               value={command}
               onChange={(e) => setCommand(e.target.value)}
@@ -82,26 +82,26 @@ export default function OperationsPage() {
 
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
             <div>
-              <label htmlFor="agent-id" className="block text-sm font-medium text-slate-700">
+              <label htmlFor="agent-id" className="block text-sm font-medium text-slate-800">
                 Created By (Agent ID)
               </label>
               <input
                 type="text"
                 id="agent-id"
                 required
-                className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border"
+                className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border bg-white text-slate-900"
                 value={agentId}
                 onChange={(e) => setAgentId(e.target.value)}
               />
             </div>
             <div>
-              <label htmlFor="deadline" className="block text-sm font-medium text-slate-700">
+              <label htmlFor="deadline" className="block text-sm font-medium text-slate-800">
                 Deadline (ISO8601)
               </label>
               <input
                 type="datetime-local"
                 id="deadline"
-                className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border"
+                className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border bg-white text-slate-900"
                 onChange={(e) => setDeadline(new Date(e.target.value).toISOString())}
               />
             </div>
