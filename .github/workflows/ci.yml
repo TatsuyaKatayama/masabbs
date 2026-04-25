@@ -6,10 +6,17 @@ on:
   pull_request:
     branches: [ "develop", "main" ]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   test:
     name: Run Tests (UT & IT)
     runs-on: ubuntu-latest
+    # If masabbs is the root of the repository, uncomment the following line and remove 'working-directory' from steps:
+    # defaults:
+    #   run:
+    #     working-directory: ./
     
     steps:
       - name: Checkout code
@@ -18,8 +25,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: 'masabbs/go.mod'
-          cache-dependency-path: 'masabbs/go.sum'
+          # If the repo root is 'masabbs', this should be 'go.mod'
+          # If 'masabbs' is a folder inside the repo, this should be 'masabbs/go.mod'
+          go-version-file: 'go.mod'
+          cache-dependency-path: 'go.sum'
 
       - name: Cache Go modules
         uses: actions/cache@v4
@@ -27,20 +36,15 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('masabbs/go.sum') }}
+          key: ${{ runner.os }}-go-${{ hashFiles('go.sum') }}
           restore-keys: |
             ${{ runner.os }}-go-
 
       - name: Download Dependencies
-        working-directory: ./masabbs
         run: go mod download
 
-      # Run Unit Tests (fast, no heavy containers usually except DB mock if any)
       - name: Run Unit Tests
-        working-directory: ./masabbs
         run: go test -v ./internal/models/... ./internal/storage/... ./internal/api/...
 
-      # Run DB Integrity and Integration Tests (uses Testcontainers)
       - name: Run Integration Tests
-        working-directory: ./masabbs
         run: go test -v ./internal/db/... ./test/integration/...
