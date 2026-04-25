@@ -141,3 +141,7 @@ func (p *Provider) GenerateInvalidSignatureCredentials(agentID string) (*Credent
 		JWT:      userJWT,
 	}, nil
 }
+
+func (p *Provider) RevokeAgent(agentID string) error {
+	return nil
+}

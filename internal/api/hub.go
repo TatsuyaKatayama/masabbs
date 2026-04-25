@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 )
 
@@ -44,15 +45,17 @@ type Hub struct {
 	broadcast  chan []byte
 	mu         sync.Mutex
 	nc         *nats.Conn
+	db         *pgxpool.Pool
 }
 
-func NewHub(nc *nats.Conn) *Hub {
+func NewHub(nc *nats.Conn, db *pgxpool.Pool) *Hub {
 	return &Hub{
 		clients:    make(map[string]*Client),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 		broadcast:  make(chan []byte, 256),
 		nc:         nc,
+		db:         db,
 	}
 }
 
@@ -195,6 +198,41 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 		Conn:    conn,
 		AgentID: agentID,
 		send:    make(chan []byte, 256),
+	}
+
+	// Fetch history from DB and push to client before registration
+	// to ensure they get missed messages.
+	if h.db != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			// Get last 50 messages. In a real system, you might use a 'since' parameter.
+			rows, err := h.db.Query(ctx, "SELECT payload FROM tasks ORDER BY created_at DESC LIMIT 50")
+			if err != nil {
+				log.Printf("Failed to fetch history for %s: %v", agentID, err)
+				return
+			}
+			defer rows.Close()
+
+			var history [][]byte
+			for rows.Next() {
+				var p []byte
+				if err := rows.Scan(&p); err == nil {
+					history = append(history, p)
+				}
+			}
+
+			// Send history in chronological order (fetched as DESC, so reverse it)
+			for i := len(history) - 1; i >= 0; i-- {
+				select {
+				case client.send <- history[i]:
+				default:
+					log.Printf("History buffer full for %s, skipping remaining history", agentID)
+					return
+				}
+			}
+		}()
 	}
 
 	h.register <- client

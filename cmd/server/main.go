@@ -85,7 +85,7 @@ func main() {
 	}
 
 	// Initialize and start WebSocket Hub
-	hub := api.NewHub(app.NATS.NC)
+	hub := api.NewHub(app.NATS.NC, app.DB)
 	go hub.Run(ctx)
 
 	// 3. Initialize Echo Framework

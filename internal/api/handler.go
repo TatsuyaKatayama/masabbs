@@ -34,6 +34,7 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc *storage
 	api := e.Group("/api/v1")
 	api.POST("/threads", h.CreateThread)
 	api.POST("/agents/:id/credentials", h.GenerateCredentials)
+	api.GET("/tasks", h.GetTasks)
 
 	// WebSocket for Admin UI
 
@@ -144,4 +145,38 @@ func (h *Handler) GenerateCredentials(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusCreated, creds)
+}
+
+func (h *Handler) GetTasks(c echo.Context) error {
+	rows, err := h.DB.Query(c.Request().Context(), `
+		SELECT payload, type, agent_id, thread_id, created_at 
+		FROM tasks 
+		ORDER BY created_at DESC 
+		LIMIT 100
+	`)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+	}
+	defer rows.Close()
+
+	var tasks []models.MessageEnvelope
+	for rows.Next() {
+		var payload []byte
+		var msgType, agentID string
+		var threadID *string
+		var createdAt time.Time
+		if err := rows.Scan(&payload, &msgType, &agentID, &threadID, &createdAt); err != nil {
+			continue
+		}
+
+		tasks = append(tasks, models.MessageEnvelope{
+			Type:      msgType,
+			ThreadID:  threadID,
+			From:      agentID,
+			Timestamp: createdAt.Unix(),
+			Payload:   payload,
+		})
+	}
+
+	return c.JSON(http.StatusOK, tasks)
 }

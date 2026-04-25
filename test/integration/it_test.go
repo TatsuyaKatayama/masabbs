@@ -91,11 +91,11 @@ func setupIntegrationEnvironment(t *testing.T) (*pgxpool.Pool, *nats.Client, fun
 }
 
 func TestIntegration_IT008_WebSocketConflict(t *testing.T) {
-	_, nc, cleanup := setupIntegrationEnvironment(t)
+	db, nc, cleanup := setupIntegrationEnvironment(t)
 	defer cleanup()
 
 	e := echo.New()
-	hub := api.NewHub(nc.NC)
+	hub := api.NewHub(nc.NC, db)
 	go hub.Run(context.Background())
 
 	e.GET("/ws", func(c echo.Context) error {
@@ -319,12 +319,89 @@ func TestIntegration_IT005_JetStreamAckRetry(t *testing.T) {
 	assert.True(t, true, "Message was successfully retried due to missing ACK")
 }
 
+func TestIntegration_IT006_WebSocketReconnectionRestoration(t *testing.T) {
+	db, nc, cleanup := setupIntegrationEnvironment(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// アーカイバーを起動してメッセージをDBに保存するようにする
+	archiver := &worker.Archiver{
+		DB: db,
+		JS: nc.JS,
+	}
+	err := archiver.Start(ctx)
+	require.NoError(t, err)
+
+	e := echo.New()
+	hub := api.NewHub(nc.NC, db)
+	go hub.Run(ctx)
+
+	e.GET("/ws", func(c echo.Context) error {
+		hub.ServeWS(c.Response(), c.Request())
+		return nil
+	})
+
+	server := httptest.NewServer(e)
+	defer server.Close()
+
+	agentID := "reconnect-agent"
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws?agent_id=" + agentID
+
+	dialer := websocket.Dialer{}
+
+	// 1. 初回接続
+	conn1, _, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	
+	// 2. 切断
+	conn1.Close()
+	time.Sleep(1 * time.Second) // Hub側でのアンレジストを待機
+
+	// 3. オフライン中にメッセージをNATSにパブリッシュ
+	testMsg := []byte(`{"type":"event", "from":"agent-1", "payload":"missed while offline"}`)
+	_, err = nc.JS.Publish(ctx, "board.event.test", testMsg)
+	require.NoError(t, err)
+	
+	// アーカイバーがDBに書き込む時間を待機
+	time.Sleep(2 * time.Second)
+
+	// 4. 再接続
+	conn2, _, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	defer conn2.Close()
+
+	// 5. メッセージが復旧して届くか検証
+	done := make(chan []byte)
+	go func() {
+		for {
+			_, msg, err := conn2.ReadMessage()
+			if err != nil {
+				return
+			}
+			// 他のメッセージが混ざる可能性があるため、内容を確認
+			if strings.Contains(string(msg), "missed while offline") {
+				done <- msg
+				return
+			}
+		}
+	}()
+
+	select {
+	case msg := <-done:
+		assert.Contains(t, string(msg), "missed while offline", "再接続後にオフライン中のメッセージを受信すべき")
+	case <-time.After(5 * time.Second):
+		t.Errorf("IT-006: タイムアウト。再接続後にメッセージが復旧しませんでした。")
+	}
+}
+
 func TestIntegration_IT007_PingPongTimeout(t *testing.T) {
-	_, nc, cleanup := setupIntegrationEnvironment(t)
+	db, nc, cleanup := setupIntegrationEnvironment(t)
 	defer cleanup()
 
 	e := echo.New()
-	hub := api.NewHub(nc.NC)
+	hub := api.NewHub(nc.NC, db)
 	go hub.Run(context.Background())
 
 	e.GET("/ws", func(c echo.Context) error {
