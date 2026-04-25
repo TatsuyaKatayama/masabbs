@@ -50,6 +50,8 @@ func setupE2EEnvironment(t *testing.T) (*pgxpool.Pool, *nats.Client, func()) {
 	require.NoError(t, err)
 	_, err = dbPool.Exec(ctx, `INSERT INTO agents (id, name, role, team_id) VALUES ('agent-b', 'Agent B', 'worker', 'e2e-team')`)
 	require.NoError(t, err)
+	_, err = dbPool.Exec(ctx, `INSERT INTO agents (id, name, role, team_id) VALUES ('agent-c', 'Agent C', 'worker', 'e2e-team')`)
+	require.NoError(t, err)
 
 	req := testcontainers.ContainerRequest{
 		Image:        "nats:2.10-alpine",
