@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
@@ -94,6 +95,45 @@ func (p *Provider) GenerateAgentCredentials(agentID, role string) (*Credentials,
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract user seed: %w", err)
 	}
+
+	return &Credentials{
+		AgentID:  agentID,
+		NKeySeed: string(seed),
+		JWT:      userJWT,
+	}, nil
+}
+
+// GenerateExpiredCredentials generates a JWT that is already expired for testing (UT-AUTH-105).
+func (p *Provider) GenerateExpiredCredentials(agentID string) (*Credentials, error) {
+	userKey, _ := nkeys.CreateUser()
+	userPubKey, _ := userKey.PublicKey()
+
+	userClaims := jwt.NewUserClaims(userPubKey)
+	userClaims.Name = agentID
+	userClaims.Expires = time.Now().Add(-1 * time.Hour).Unix() // Expired 1 hour ago
+
+	userJWT, _ := userClaims.Encode(p.AccountKey)
+	seed, _ := userKey.Seed()
+
+	return &Credentials{
+		AgentID:  agentID,
+		NKeySeed: string(seed),
+		JWT:      userJWT,
+	}, nil
+}
+
+// GenerateInvalidSignatureCredentials generates a JWT signed by a different (invalid) account key (UT-AUTH-106).
+func (p *Provider) GenerateInvalidSignatureCredentials(agentID string) (*Credentials, error) {
+	userKey, _ := nkeys.CreateUser()
+	userPubKey, _ := userKey.PublicKey()
+
+	userClaims := jwt.NewUserClaims(userPubKey)
+	userClaims.Name = agentID
+
+	// Sign with a completely different, unauthorized account key
+	invalidAccKey, _ := nkeys.CreateAccount()
+	userJWT, _ := userClaims.Encode(invalidAccKey)
+	seed, _ := userKey.Seed()
 
 	return &Credentials{
 		AgentID:  agentID,
