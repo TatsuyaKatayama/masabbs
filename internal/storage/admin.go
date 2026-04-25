@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/minio/madmin-go/v3"
 )
@@ -40,6 +41,10 @@ type policyDocument struct {
 
 // generatePolicyJSON generates the JSON policy string based on role using encoding/json
 func (c *AdminClient) generatePolicyJSON(role, threadID string) ([]byte, error) {
+	if strings.Contains(threadID, "..") || strings.Contains(threadID, "/") {
+		return nil, fmt.Errorf("invalid thread_id: path traversal detected")
+	}
+
 	doc := policyDocument{
 		Version: "2012-10-17",
 	}
