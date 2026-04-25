@@ -63,23 +63,39 @@ func (c *Client) ensureBucket(ctx context.Context) error {
 	return nil
 }
 
+// GetThreadInputPath returns the S3 relative path for a thread's input directory
+func (c *Client) GetThreadInputPath(threadID string) string {
+	return fmt.Sprintf("tasks/%s/input/", threadID)
+}
+
 // generateThreadPath returns the base path for a thread
 func (c *Client) generateThreadPath(threadID string) string {
 	return fmt.Sprintf("tasks/%s/", threadID)
 }
 
-// CreateThreadFolders creates the initial structure for a new thread (input, output, logs)
+// CreateThreadFolders creates the initial structure for a new thread (input, output, logs, and meta.json)
 // Caller must also invoke MinIO Admin API to apply access controls (SetThreadPolicy).
 func (c *Client) CreateThreadFolders(ctx context.Context, threadID string) error {
-	folders := []string{"input/", "output/", "logs/"}
 	basePath := c.generateThreadPath(threadID)
 
+	// Create subdirectories with placeholder files
+	folders := []string{"input/", "output/", "logs/"}
 	for _, folder := range folders {
-		objectName := basePath + folder + ".keep" // Create a placeholder file to ensure path exists
+		objectName := basePath + folder + ".keep"
 		_, err := c.S3.PutObject(ctx, c.Bucket, objectName, bytes.NewReader([]byte{}), 0, minio.PutObjectOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to create folder %s: %w", folder, err)
 		}
 	}
+
+	// Create meta.json (spec v1.0.1)
+	metaName := basePath + "meta.json"
+	_, err := c.S3.PutObject(ctx, c.Bucket, metaName, bytes.NewReader([]byte("{}")), 2, minio.PutObjectOptions{
+		ContentType: "application/json",
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create meta.json: %w", err)
+	}
+
 	return nil
 }

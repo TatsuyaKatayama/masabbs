@@ -64,7 +64,7 @@ func (h *Handler) CreateThread(c echo.Context) error {
 
 	// 1. Generate ULID
 	threadID := ulid.Make().String()
-	inputDir := fmt.Sprintf("tasks/%s/input/", threadID)
+	inputDir := h.Storage.GetThreadInputPath(threadID)
 
 	// 2. Create S3 Folders (First, as it's hardest to roll back)
 	if err := h.Storage.CreateThreadFolders(ctx, threadID); err != nil {
