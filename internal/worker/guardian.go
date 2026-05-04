@@ -21,6 +21,10 @@ type Guardian struct {
 	// Stats for rate limiting: agentID -> []timestamps
 	stats map[string][]time.Time
 	
+	// Track consecutive violations of strict limit (5 msg/s)
+	strictViolations map[string]int
+	lastViolationSec map[string]int64
+
 	// History for loop detection: threadID -> map[agentID]count
 	threadHistory map[string]map[string]int
 
@@ -29,9 +33,18 @@ type Guardian struct {
 
 func (g *Guardian) Start(ctx context.Context) error {
 	g.stats = make(map[string][]time.Time)
+	g.strictViolations = make(map[string]int)
+	g.lastViolationSec = make(map[string]int64)
 	g.threadHistory = make(map[string]map[string]int)
 
 	_, err := g.NC.Subscribe("board.>", func(m *nats.Msg) {
+		// 0. Payload Size Check (100MB)
+		if len(m.Data) > 100*1024*1024 {
+			log.Printf("Guardian: Payload too large (%d bytes). Blocking for 1h.", len(m.Data))
+			// We don't have agentID yet, but we can't parse huge JSON anyway.
+			return
+		}
+
 		var env models.MessageEnvelope
 		if err := json.Unmarshal(m.Data, &env); err != nil {
 			return
@@ -83,9 +96,45 @@ func (g *Guardian) checkRateLimit(agentID string) {
 	}
 	g.stats[agentID] = recent
 
-	if msgCountLastMin > 60 || msgCountLastSec > 5 {
-		log.Printf("Guardian: Rate limit exceeded for agent %s (%d msg/min, %d msg/sec). Revoking for 10s.", agentID, msgCountLastMin, msgCountLastSec)
+	// 1. Minutely Limit (60 msg/min)
+	if msgCountLastMin > 60 {
+		log.Printf("Guardian: Rate limit exceeded for agent %s (%d msg/min). Revoking for 10s.", agentID, msgCountLastMin)
 		g.AuthProvider.RevokeAgent(agentID, 10*time.Second)
+		return
+	}
+
+	// 2. Burst Limit (20 msg/sec)
+	if msgCountLastSec > 20 {
+		log.Printf("Guardian: Burst limit exceeded for agent %s (%d msg/sec). Revoking for 10s.", agentID, msgCountLastSec)
+		g.AuthProvider.RevokeAgent(agentID, 10*time.Second)
+		return
+	}
+
+	// 3. Strict Mode (5 msg/sec)
+	// If it exceeds 5 msg/sec in consecutive seconds, block.
+	if msgCountLastSec > 5 {
+		currentSec := now.Unix()
+		if g.lastViolationSec[agentID] != currentSec {
+			// This is a new second that exceeds 5 msg/s
+			if g.lastViolationSec[agentID] == currentSec-1 {
+				g.strictViolations[agentID]++
+			} else {
+				g.strictViolations[agentID] = 1
+			}
+			g.lastViolationSec[agentID] = currentSec
+
+			if g.strictViolations[agentID] >= 2 {
+				log.Printf("Guardian: Strict rate limit exceeded for agent %s (continual > 5 msg/sec). Revoking for 10s.", agentID)
+				g.AuthProvider.RevokeAgent(agentID, 10*time.Second)
+				g.strictViolations[agentID] = 0 // Reset
+			}
+		}
+	} else {
+		// Reset violations if a second passes with <= 5 msgs
+		currentSec := now.Unix()
+		if g.lastViolationSec[agentID] < currentSec {
+			g.strictViolations[agentID] = 0
+		}
 	}
 }
 

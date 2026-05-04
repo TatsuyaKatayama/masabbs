@@ -1,16 +1,91 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/TatsuyaKatayama/masabbs/internal/models"
 	"github.com/TatsuyaKatayama/masabbs/internal/worker"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestE2E_ATK_003_HugePayload(t *testing.T) {
+	e := echo.New()
+	// In the real server it's 100M, but we test with 1M to keep tests fast and efficient.
+	// The mechanism is the same.
+	e.Use(middleware.BodyLimit("1M"))
+	
+	e.POST("/api/v1/threads", func(c echo.Context) error {
+		return c.NoContent(http.StatusCreated)
+	})
+
+	t.Run("Accepts small payload", func(t *testing.T) {
+		smallData := []byte(`{"command":"test"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/threads", bytes.NewReader(smallData))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusCreated, rec.Code)
+	})
+
+	t.Run("Rejects 2MB payload", func(t *testing.T) {
+		hugeData := make([]byte, 2*1024*1024) // 2MB
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/threads", bytes.NewReader(hugeData))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	})
+}
+
+func TestE2E_ATK_006_BurstLimit(t *testing.T) {
+	_, nc, authProvider, creds, cleanup := setupE2EEnvironment(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	guardian := &worker.Guardian{
+		AuthProvider: authProvider,
+		NC:           nc.NC,
+	}
+	go guardian.Start(ctx)
+
+	agentID := "agent-b"
+	threadID := "01HGWY5X9A7Z4K2M3Q8P6R0V1G"
+	
+	payload, _ := json.Marshal(models.StatusPayload{Progress: 50, State: "running"})
+	env := models.MessageEnvelope{
+		Type: "status", ThreadID: &threadID, From: agentID, Timestamp: time.Now().Unix(), Payload: payload,
+	}
+	subject := "board.status." + threadID
+
+	// 1. Burst 15 msgs in 1 second (Should be allowed)
+	for i := 0; i < 15; i++ {
+		signAndPublish(t, nc, authProvider, creds[agentID], env, subject)
+	}
+	time.Sleep(1 * time.Second)
+	assert.False(t, authProvider.IsRevoked(agentID), "15 msg/sec should NOT trigger revocation (burst allowed up to 20)")
+
+	// 2. Continual 6 msg/sec for 3 seconds (Should be blocked by strict mode)
+	// We use 500ms sleep to ensure batches overlap in the 1s sliding window.
+	for i := 0; i < 4; i++ {
+		for j := 0; j < 6; j++ {
+			signAndPublish(t, nc, authProvider, creds[agentID], env, subject)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	time.Sleep(1 * time.Second) // Wait for Guardian to process
+	assert.True(t, authProvider.IsRevoked(agentID), "Continual > 5 msg/sec should trigger strict mode revocation")
+}
 
 func TestE2E_ATK_001_RateLimit(t *testing.T) {
 	db, nc, authProvider, creds, cleanup := setupE2EEnvironment(t)

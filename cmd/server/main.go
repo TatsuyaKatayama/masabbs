@@ -101,6 +101,7 @@ func main() {
 	e := echo.New()
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
+	e.Use(middleware.BodyLimit("100M"))
 	
 	// TODO: Restrict AllowOrigins before production
 	e.Use(middleware.CORS())
