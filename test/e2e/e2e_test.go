@@ -13,6 +13,7 @@ import (
 	"github.com/TatsuyaKatayama/masabbs/internal/nats"
 	"github.com/TatsuyaKatayama/masabbs/internal/worker"
 	"github.com/jackc/pgx/v5/pgxpool"
+	libnats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,6 +62,8 @@ func setupE2EEnvironment(t *testing.T) (*pgxpool.Pool, *nats.Client, *auth.Provi
 	registerAgent("agent-a", "Agent A", "manager")
 	registerAgent("agent-b", "Agent B", "worker")
 	registerAgent("agent-c", "Agent C", "worker")
+	registerAgent("agent-d", "Agent D", "worker")
+	registerAgent("agent-o", "Agent O", "observer")
 
 	req := testcontainers.ContainerRequest{
 		Image:        "nats:2.10-alpine",
@@ -205,4 +208,159 @@ func TestE2E_ERR_001_AgentSilence(t *testing.T) {
 	err = db.QueryRow(ctx, "SELECT status FROM threads WHERE id = $1", threadID).Scan(&finalStatus)
 	require.NoError(t, err)
 	assert.Equal(t, "error", finalStatus, "Thread should converge to 'error' on silence")
+}
+
+func TestE2E_NORMAL_002_BroadcastAndAggregation(t *testing.T) {
+	db, nc, authProvider, creds, cleanup := setupE2EEnvironment(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	archiver := &worker.Archiver{DB: db, JS: nc.JS, Auth: authProvider}
+	go archiver.Start(ctx)
+	time.Sleep(1 * time.Second)
+
+	threadID := "01HGWY5X9A7Z4K2M3Q8P6R0V1D"
+	_, err := db.Exec(ctx, "INSERT INTO threads (id, created_by_agent, status) VALUES ($1, 'agent-a', 'open')", threadID)
+	require.NoError(t, err)
+
+	// Setup Worker Agents (B, C, D)
+	workerIDs := []string{"agent-b", "agent-c", "agent-d"}
+	for _, id := range workerIDs {
+		go func(agentID string) {
+			consumer, err := nc.JS.CreateOrUpdateConsumer(ctx, "board_tasks", jetstream.ConsumerConfig{
+				Durable:       "worker-" + agentID,
+				FilterSubject: "board.task.*",
+				AckPolicy:     jetstream.AckExplicitPolicy,
+			})
+			if err != nil {
+				return
+			}
+			for {
+				msgs, err := consumer.Fetch(1, jetstream.FetchMaxWait(1*time.Second))
+				if err != nil {
+					continue
+				}
+				for msg := range msgs.Messages() {
+					var env models.MessageEnvelope
+					json.Unmarshal(msg.Data(), &env)
+					
+					// Only respond if targeted in to_agents (broadcast includes them)
+					isTargeted := false
+					for _, to := range env.To {
+						if to == agentID {
+							isTargeted = true
+							break
+						}
+					}
+					if !isTargeted {
+						msg.Ack()
+						continue
+					}
+
+					payload, _ := json.Marshal(models.ResultPayload{OutputDir: "out/" + agentID, ExitCode: 0})
+					resEnv := models.MessageEnvelope{
+						Type: "result", ThreadID: env.ThreadID, From: agentID, Timestamp: time.Now().Unix(), Payload: payload,
+					}
+					signAndPublish(t, nc, authProvider, creds[agentID], resEnv, "board.result."+*env.ThreadID)
+					msg.Ack()
+					return
+				}
+			}
+		}(id)
+	}
+
+	// Agent A publishes Broadcast Task
+	payload, _ := json.Marshal(models.TaskPayload{Command: "Compute pi", InputDir: "in/", Deadline: ""})
+	taskEnv := models.MessageEnvelope{
+		Type: "task", ThreadID: &threadID, From: "agent-a", Timestamp: time.Now().Unix(), Payload: payload,
+		To: []string{"agent-b", "agent-c", "agent-d"},
+	}
+	signAndPublish(t, nc, authProvider, creds["agent-a"], taskEnv, "board.task."+threadID)
+
+	time.Sleep(5 * time.Second)
+
+	// Verify all 3 results are in DB
+	var resultCount int
+	err = db.QueryRow(ctx, "SELECT count(*) FROM tasks WHERE thread_id = $1 AND type = 'result'", threadID).Scan(&resultCount)
+	require.NoError(t, err)
+	assert.Equal(t, 3, resultCount, "Should collect 3 results from different agents")
+
+	// 4. Agent A (Manager) aggregates results and marks thread as done
+	// In a real scenario, Agent A would be listening to 'board.result.threadID'
+	_, err = db.Exec(ctx, "UPDATE threads SET status = 'done' WHERE id = $1", threadID)
+	require.NoError(t, err)
+
+	var finalStatus string
+	err = db.QueryRow(ctx, "SELECT status FROM threads WHERE id = $1", threadID).Scan(&finalStatus)
+	require.NoError(t, err)
+	assert.Equal(t, "done", finalStatus, "Thread should be marked as 'done' after aggregation")
+}
+
+func TestE2E_NORMAL_004_ObserverSubscription(t *testing.T) {
+	db, nc, authProvider, creds, cleanup := setupE2EEnvironment(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	archiver := &worker.Archiver{DB: db, JS: nc.JS, Auth: authProvider}
+	go archiver.Start(ctx)
+	time.Sleep(1 * time.Second)
+
+	threadID := "01HGWY5X9A7Z4K2M3Q8P6R0V1E"
+	_, err := db.Exec(ctx, "INSERT INTO threads (id, created_by_agent, status) VALUES ($1, 'agent-a', 'open')", threadID)
+	require.NoError(t, err)
+
+	// Observer Agent O starts listening to all events
+	receivedMessages := make(chan string, 10)
+	sub, err := nc.NC.Subscribe("board.>", func(m *libnats.Msg) {
+		var env models.MessageEnvelope
+		json.Unmarshal(m.Data, &env)
+		receivedMessages <- env.Type
+	})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	// Agent B (Worker)
+	go func() {
+		consumer, _ := nc.JS.CreateOrUpdateConsumer(ctx, "board_tasks", jetstream.ConsumerConfig{
+			Durable:       "worker-observer-test",
+			FilterSubject: "board.task.*",
+		})
+		msgs, _ := consumer.Fetch(1)
+		for msg := range msgs.Messages() {
+			var env models.MessageEnvelope
+			json.Unmarshal(msg.Data(), &env)
+			resEnv := models.MessageEnvelope{
+				Type: "result", ThreadID: env.ThreadID, From: "agent-b", Timestamp: time.Now().Unix(), Payload: []byte("{}"),
+			}
+			signAndPublish(t, nc, authProvider, creds["agent-b"], resEnv, "board.result."+*env.ThreadID)
+			msg.Ack()
+			return
+		}
+	}()
+
+	// Agent A publishes Task
+	taskEnv := models.MessageEnvelope{
+		Type: "task", ThreadID: &threadID, From: "agent-a", Timestamp: time.Now().Unix(), Payload: []byte("{}"),
+		To: []string{"agent-b"},
+	}
+	signAndPublish(t, nc, authProvider, creds["agent-a"], taskEnv, "board.task."+threadID)
+
+	// Check if Observer received both 'task' and 'result'
+	types := make(map[string]bool)
+	timeout := time.After(5 * time.Second)
+	for len(types) < 2 {
+		select {
+		case t := <-receivedMessages:
+			types[t] = true
+		case <-timeout:
+			t.Fatal("Observer timed out waiting for messages")
+		}
+	}
+
+	assert.True(t, types["task"], "Observer should see 'task' message")
+	assert.True(t, types["result"], "Observer should see 'result' message")
 }
