@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/base64"
 	"fmt"
 	"sync"
 	"time"
@@ -170,6 +171,42 @@ func (p *Provider) IsRevoked(agentID string) bool {
 		return false
 	}
 	return true
+}
+
+// VerifySignature validates that the message was indeed signed by the claimed agent.
+func (p *Provider) VerifySignature(agentID string, data []byte, signature string) error {
+	p.mu.RLock()
+	userPubKey, ok := p.pubKeys[agentID]
+	p.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("public key not found for agent: %s", agentID)
+	}
+
+	pub, err := nkeys.FromPublicKey(userPubKey)
+	if err != nil {
+		return fmt.Errorf("invalid public key: %w", err)
+	}
+
+	sig, err := base64.StdEncoding.DecodeString(signature)
+	if err != nil {
+		return fmt.Errorf("invalid signature encoding: %w", err)
+	}
+
+	return pub.Verify(data, sig)
+}
+
+// SignMessage signs a byte array with an agent's seed (for testing/simulation).
+func (p *Provider) SignMessage(seed string, data []byte) (string, error) {
+	kp, err := nkeys.FromSeed([]byte(seed))
+	if err != nil {
+		return "", err
+	}
+	sig, err := kp.Sign(data)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(sig), nil
 }
 
 // GetRevocationList returns a map of Public Key to Revocation Time for NATS Account Claims.

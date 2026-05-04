@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TatsuyaKatayama/masabbs/internal/auth"
 	"github.com/TatsuyaKatayama/masabbs/internal/models"
 	"github.com/TatsuyaKatayama/masabbs/internal/worker"
 	"github.com/stretchr/testify/assert"
@@ -14,14 +13,13 @@ import (
 )
 
 func TestE2E_ERR_007_InfiniteLoopDetection(t *testing.T) {
-	db, nc, cleanup := setupE2EEnvironment(t)
+	db, nc, authProvider, creds, cleanup := setupE2EEnvironment(t)
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	// サーバー側のコンポーネントを手動で起動
-	authProvider, _ := auth.NewProvider()
 	archiver := &worker.Archiver{
 		DB: db,
 		JS: nc.JS,
@@ -32,7 +30,7 @@ func TestE2E_ERR_007_InfiniteLoopDetection(t *testing.T) {
 	guardian := &worker.Guardian{
 		AuthProvider: authProvider,
 		NC:           nc.NC,
-		DB:           db, // GuardianにDBアクセスを追加してstatus変更できるようにする想定
+		DB:           db,
 	}
 	go guardian.Start(ctx)
 
@@ -50,8 +48,7 @@ func TestE2E_ERR_007_InfiniteLoopDetection(t *testing.T) {
 		env := models.MessageEnvelope{
 			Type: "assign", ThreadID: &threadID, From: from, To: []string{to}, Timestamp: time.Now().Unix(), Payload: payload,
 		}
-		data, _ := json.Marshal(env)
-		nc.NC.Publish("board.assign."+threadID, data)
+		signAndPublish(t, nc, authProvider, creds[from], env, "board.assign."+threadID)
 		time.Sleep(100 * time.Millisecond) // 順序を保証するための小休止
 	}
 

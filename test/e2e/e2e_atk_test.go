@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TatsuyaKatayama/masabbs/internal/auth"
 	"github.com/TatsuyaKatayama/masabbs/internal/models"
 	"github.com/TatsuyaKatayama/masabbs/internal/worker"
 	"github.com/stretchr/testify/assert"
@@ -14,14 +13,12 @@ import (
 )
 
 func TestE2E_ATK_001_RateLimit(t *testing.T) {
-	db, nc, cleanup := setupE2EEnvironment(t)
+	db, nc, authProvider, creds, cleanup := setupE2EEnvironment(t)
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// サーバー側のコンポーネントを手動で起動（E2E環境の模倣）
-	authProvider, _ := auth.NewProvider()
 	archiver := &worker.Archiver{
 		DB: db,
 		JS: nc.JS,
@@ -45,13 +42,11 @@ func TestE2E_ATK_001_RateLimit(t *testing.T) {
 	resEnv := models.MessageEnvelope{
 		Type: "result", ThreadID: &threadID, From: agentID, Timestamp: time.Now().Unix(), Payload: payload,
 	}
-	data, _ := json.Marshal(resEnv)
 	subject := "board.result." + threadID
 
 	// 70通パブリッシュ
 	for i := 0; i < 70; i++ {
-		_, err := nc.JS.Publish(ctx, subject, data)
-		require.NoError(t, err)
+		signAndPublish(t, nc, authProvider, creds[agentID], resEnv, subject)
 	}
 
 	// アーカイバーの処理を待機
@@ -63,35 +58,73 @@ func TestE2E_ATK_001_RateLimit(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Logf("Messages in DB: %d", count)
-
-	// 60通を超えた分は Guardian によって Revoke され、Archiver で破棄されているはず
-	assert.LessOrEqual(t, count, 61, "60通程度で制限されるべき（タイミングにより1,2通前後する可能性あり）")
+	assert.LessOrEqual(t, count, 61, "Should be limited around 60 (actually likely around 6-10 due to per-sec limit)")
 }
 
-func TestE2E_ATK_003_HugePayload(t *testing.T) {
-	_, nc, cleanup := setupE2EEnvironment(t)
+func TestE2E_ATK_004_IdImpersonation(t *testing.T) {
+	db, nc, authProvider, creds, cleanup := setupE2EEnvironment(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	archiver := &worker.Archiver{
+		DB: db,
+		JS: nc.JS,
+		Auth: authProvider,
+	}
+	go archiver.Start(ctx)
+
+	threadID := "01HGWY5X9A7Z4K2M3Q8P6R0V1F"
+	db.Exec(ctx, "INSERT INTO threads (id, created_by_agent, status) VALUES ($1, 'agent-a', 'open')", threadID)
+
+	// agent-b tries to impersonate agent-a
+	// env.From = 'agent-a', but signed with creds["agent-b"].NKeySeed
+	payload, _ := json.Marshal(models.TaskPayload{Command: "Malicious work"})
+	env := models.MessageEnvelope{
+		Type: "task", ThreadID: &threadID, From: "agent-a", Timestamp: time.Now().Unix(), Payload: payload,
+	}
+	
+	// Prepare canonical data for signing
+	data, _ := json.Marshal(env)
+	sig, _ := authProvider.SignMessage(creds["agent-b"].NKeySeed, data)
+	env.Signature = sig
+	
+	finalData, _ := json.Marshal(env)
+	nc.NC.Publish("board.task."+threadID, finalData)
+
+	time.Sleep(3 * time.Second)
+
+	var count int
+	db.QueryRow(ctx, "SELECT count(*) FROM tasks WHERE thread_id = $1 AND agent_id = 'agent-a'", threadID).Scan(&count)
+	assert.Equal(t, 0, count, "Impersonated message should NOT be persisted")
+}
+
+func TestE2E_ATK_005_UnauthorizedShutdown(t *testing.T) {
+	db, nc, authProvider, creds, cleanup := setupE2EEnvironment(t)
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 10MB + 1 byte payload (limit is 10MB in UT-VAL-110, spec says 100MB for ATK-003, let's test 11MB)
-	hugeData := make([]byte, 11*1024*1024)
-	for i := range hugeData {
-		hugeData[i] = 'a'
+	archiver := &worker.Archiver{
+		DB: db,
+		JS: nc.JS,
+		Auth: authProvider,
 	}
+	go archiver.Start(ctx)
 
-	resEnv := models.MessageEnvelope{
-		Type: "result", From: "agent-b", Timestamp: time.Now().Unix(), Payload: hugeData,
+	// agent-b (worker) tries to send shutdown
+	payload, _ := json.Marshal(models.ShutdownPayload{Reason: "I am evil"})
+	env := models.MessageEnvelope{
+		Type: "shutdown", From: "agent-b", Timestamp: time.Now().Unix(), Payload: payload,
 	}
-	data, _ := json.Marshal(resEnv)
-
-	_, err := nc.JS.Publish(ctx, "board.result.huge", data)
 	
-	// Current expected behavior: Likely succeeds or hits NATS default limit (usually 1MB unless configured)
-	if err != nil {
-		t.Logf("Huge payload rejected: %v", err)
-	} else {
-		t.Log("Huge payload accepted (Limit not enforced yet)")
-	}
+	signAndPublish(t, nc, authProvider, creds["agent-b"], env, "board.shutdown")
+
+	time.Sleep(3 * time.Second)
+
+	var count int
+	db.QueryRow(ctx, "SELECT count(*) FROM tasks WHERE type = 'shutdown' AND agent_id = 'agent-b'").Scan(&count)
+	assert.Equal(t, 0, count, "Unauthorized shutdown should NOT be persisted")
 }
