@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TatsuyaKatayama/masabbs/internal/auth"
 	"github.com/TatsuyaKatayama/masabbs/internal/models"
 	"github.com/TatsuyaKatayama/masabbs/internal/nats"
 	"github.com/TatsuyaKatayama/masabbs/internal/worker"
@@ -20,7 +21,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-func setupE2EEnvironment(t *testing.T) (*pgxpool.Pool, *nats.Client, func()) {
+func setupE2EEnvironment(t *testing.T) (*pgxpool.Pool, *nats.Client, *auth.Provider, map[string]*auth.Credentials, func()) {
 	ctx := context.Background()
 
 	pwd, _ := os.Getwd()
@@ -44,12 +45,22 @@ func setupE2EEnvironment(t *testing.T) (*pgxpool.Pool, *nats.Client, func()) {
 	dbPool, err := pgxpool.New(ctx, dbURL)
 	require.NoError(t, err)
 
+	authProvider, _ := auth.NewProvider()
+	credsMap := make(map[string]*auth.Credentials)
+
 	_, err = dbPool.Exec(ctx, `INSERT INTO teams (id, name) VALUES ('e2e-team', 'E2E Team')`)
 	require.NoError(t, err)
-	_, err = dbPool.Exec(ctx, `INSERT INTO agents (id, name, role, team_id) VALUES ('agent-a', 'Agent A', 'manager', 'e2e-team')`)
-	require.NoError(t, err)
-	_, err = dbPool.Exec(ctx, `INSERT INTO agents (id, name, role, team_id) VALUES ('agent-b', 'Agent B', 'worker', 'e2e-team')`)
-	require.NoError(t, err)
+
+	registerAgent := func(id, name, role string) {
+		_, err := dbPool.Exec(ctx, `INSERT INTO agents (id, name, role, team_id) VALUES ($1, $2, $3, 'e2e-team')`, id, name, role)
+		require.NoError(t, err)
+		creds, _ := authProvider.GenerateAgentCredentials(id, role)
+		credsMap[id] = creds
+	}
+
+	registerAgent("agent-a", "Agent A", "manager")
+	registerAgent("agent-b", "Agent B", "worker")
+	registerAgent("agent-c", "Agent C", "worker")
 
 	req := testcontainers.ContainerRequest{
 		Image:        "nats:2.10-alpine",
@@ -80,17 +91,29 @@ func setupE2EEnvironment(t *testing.T) (*pgxpool.Pool, *nats.Client, func()) {
 		pgContainer.Terminate(ctx)
 	}
 
-	return dbPool, natsClient, cleanup
+	return dbPool, natsClient, authProvider, credsMap, cleanup
+}
+
+func signAndPublish(t *testing.T, nc *nats.Client, auth *auth.Provider, creds *auth.Credentials, env models.MessageEnvelope, subject string) {
+	env.Signature = "" // Ensure signature is empty before signing
+	data, _ := json.Marshal(env)
+	sig, err := auth.SignMessage(creds.NKeySeed, data)
+	require.NoError(t, err)
+	env.Signature = sig
+	
+	finalData, _ := json.Marshal(env)
+	err = nc.NC.Publish(subject, finalData)
+	require.NoError(t, err)
 }
 
 func TestE2E_NORMAL_001_1to1Task(t *testing.T) {
-	db, nc, cleanup := setupE2EEnvironment(t)
+	db, nc, authProvider, creds, cleanup := setupE2EEnvironment(t)
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	archiver := &worker.Archiver{DB: db, JS: nc.JS}
+	archiver := &worker.Archiver{DB: db, JS: nc.JS, Auth: authProvider}
 	go archiver.Start(ctx)
 	time.Sleep(1 * time.Second)
 
@@ -130,8 +153,8 @@ func TestE2E_NORMAL_001_1to1Task(t *testing.T) {
 				resEnv := models.MessageEnvelope{
 					Type: "result", ThreadID: env.ThreadID, From: "agent-b", Timestamp: time.Now().Unix(), Payload: payload,
 				}
-				data, _ := json.Marshal(resEnv)
-				nc.NC.Publish("board.result."+*env.ThreadID, data)
+				
+				signAndPublish(t, nc, authProvider, creds["agent-b"], resEnv, "board.result."+*env.ThreadID)
 				
 				db.Exec(context.Background(), "UPDATE threads SET status = 'done' WHERE id = $1", *env.ThreadID)
 				msg.Ack()
@@ -145,9 +168,8 @@ func TestE2E_NORMAL_001_1to1Task(t *testing.T) {
 	taskEnv := models.MessageEnvelope{
 		Type: "task", ThreadID: &threadID, From: "agent-a", Timestamp: time.Now().Unix(), Payload: payload,
 	}
-	data, _ := json.Marshal(taskEnv)
-	err = nc.NC.Publish("board.task."+threadID, data)
-	require.NoError(t, err)
+	
+	signAndPublish(t, nc, authProvider, creds["agent-a"], taskEnv, "board.task."+threadID)
 
 	time.Sleep(3 * time.Second)
 
@@ -158,7 +180,7 @@ func TestE2E_NORMAL_001_1to1Task(t *testing.T) {
 }
 
 func TestE2E_ERR_001_AgentSilence(t *testing.T) {
-	db, _, cleanup := setupE2EEnvironment(t)
+	db, _, _, _, cleanup := setupE2EEnvironment(t)
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

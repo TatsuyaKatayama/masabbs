@@ -77,12 +77,21 @@ func main() {
 
 	// Start Archiver in the background
 	archiver := &worker.Archiver{
-		DB: app.DB,
-		JS: app.NATS.JS,
+		DB:   app.DB,
+		JS:   app.NATS.JS,
+		Auth: app.AuthProvider,
 	}
 	if err := archiver.Start(ctx); err != nil {
 		log.Fatalf("Unable to start archiver: %v\n", err)
 	}
+
+	// Start Guardian for rate limiting and safety
+	guardian := &worker.Guardian{
+		AuthProvider: app.AuthProvider,
+		NC:           app.NATS.NC,
+		DB:           app.DB,
+	}
+	go guardian.Start(ctx)
 
 	// Initialize and start WebSocket Hub
 	hub := api.NewHub(app.NATS.NC, app.DB)
@@ -92,6 +101,7 @@ func main() {
 	e := echo.New()
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
+	e.Use(middleware.BodyLimit("100M"))
 	
 	// TODO: Restrict AllowOrigins before production
 	e.Use(middleware.CORS())

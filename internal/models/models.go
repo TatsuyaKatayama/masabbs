@@ -66,6 +66,7 @@ type MessageEnvelope struct {
 	Observers []string        `json:"observers,omitempty"`
 	Timestamp int64           `json:"timestamp"`
 	Payload   json.RawMessage `json:"payload"`
+	Signature string          `json:"signature,omitempty"`
 }
 
 // Payloads for different message types (for unmarshaling MessageEnvelope.Payload)

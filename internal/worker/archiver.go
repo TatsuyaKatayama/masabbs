@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/TatsuyaKatayama/masabbs/internal/auth"
 	"github.com/TatsuyaKatayama/masabbs/internal/models"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
@@ -14,8 +15,9 @@ import (
 )
 
 type Archiver struct {
-	DB *pgxpool.Pool
-	JS jetstream.JetStream
+	DB   *pgxpool.Pool
+	JS   jetstream.JetStream
+	Auth *auth.Provider
 }
 
 // Start runs the archiver to consume messages from multiple streams
@@ -62,8 +64,42 @@ func (a *Archiver) processMessage(msg jetstream.Msg) {
 	var env models.MessageEnvelope
 	if err := json.Unmarshal(msg.Data(), &env); err != nil {
 		log.Printf("Archiver failed to parse message: %v", err)
-		msg.Ack() // Ack bad JSON to avoid poison pill
+		msg.Ack()
 		return
+	}
+
+	// Signature Verification
+	if a.Auth != nil {
+		// Verify impersonation
+		// We MUST use the exact same structure and JSON encoding used during signing.
+		sig := env.Signature
+		env.Signature = "" // Zero out signature for verification
+		canonicalData, _ := json.Marshal(env)
+		
+		if err := a.Auth.VerifySignature(env.From, canonicalData, sig); err != nil {
+			log.Printf("Archiver: Invalid signature from %s: %v", env.From, err)
+			msg.Ack()
+			return
+		}
+		env.Signature = sig // Restore signature
+
+		// Safety check: Is this agent blocked?
+		if a.Auth.IsRevoked(env.From) {
+			log.Printf("Archiver: Dropping message from revoked agent %s", env.From)
+			msg.Ack()
+			return
+		}
+
+		// Role-based check for sensitive commands (e.g. shutdown)
+		if env.Type == "shutdown" {
+			var role string
+			err := a.DB.QueryRow(context.Background(), "SELECT role FROM agents WHERE id = $1", env.From).Scan(&role)
+			if err != nil || (role != "manager" && role != "admin") {
+				log.Printf("Archiver: Unauthorized shutdown attempt from agent %s (role: %s)", env.From, role)
+				msg.Ack()
+				return
+			}
+		}
 	}
 
 	taskID := ulid.Make().String()
