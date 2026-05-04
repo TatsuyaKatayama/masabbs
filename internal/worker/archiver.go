@@ -102,10 +102,46 @@ func (a *Archiver) processMessage(msg jetstream.Msg) {
 		}
 	}
 
-	taskID := ulid.Make().String()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	// Thread Check & Idempotency
+	if env.ThreadID != nil && *env.ThreadID != "" {
+		var threadStatus string
+		err := a.DB.QueryRow(ctx, "SELECT status FROM threads WHERE id = $1", *env.ThreadID).Scan(&threadStatus)
+		if err != nil {
+			log.Printf("Archiver: Thread %s not found. Dropping message.", *env.ThreadID)
+			msg.Ack()
+			return
+		}
+
+		// Discard late messages if thread is already finished
+		if threadStatus == "done" || threadStatus == "error" {
+			log.Printf("Archiver: Thread %s is in status %s. Dropping message type %s from %s.", *env.ThreadID, threadStatus, env.Type, env.From)
+			msg.Ack()
+			return
+		}
+
+		// Idempotency: Prevent duplicate results for the same thread from the same agent
+		if env.Type == "result" {
+			var exists bool
+			a.DB.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM tasks WHERE thread_id = $1 AND agent_id = $2 AND type = 'result')", *env.ThreadID, env.From).Scan(&exists)
+			if exists {
+				log.Printf("Archiver: Duplicate result from agent %s for thread %s. Dropping.", env.From, *env.ThreadID)
+				msg.Ack()
+				return
+			}
+		}
+
+		// Rejection of duplicate assignment
+		if env.Type == "assign" && threadStatus == "assigned" {
+			log.Printf("Archiver: Thread %s is already assigned. Dropping duplicate assignment from %s.", *env.ThreadID, env.From)
+			msg.Ack()
+			return
+		}
+	}
+
+	taskID := ulid.Make().String()
 
 	_, err := a.DB.Exec(ctx, `
 		INSERT INTO tasks (id, thread_id, agent_id, type, to_agents, observers, payload)
