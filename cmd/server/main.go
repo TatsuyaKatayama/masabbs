@@ -89,6 +89,7 @@ func main() {
 	guardian := &worker.Guardian{
 		AuthProvider: app.AuthProvider,
 		NC:           app.NATS.NC,
+		DB:           app.DB,
 	}
 	go guardian.Start(ctx)
 
