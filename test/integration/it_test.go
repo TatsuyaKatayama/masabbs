@@ -183,13 +183,9 @@ func TestIntegration_IT002_DuplicateMessages(t *testing.T) {
 	err = db.QueryRow(ctx, "SELECT count(*) FROM tasks WHERE thread_id = $1 AND type = 'result'", threadID).Scan(&count)
 	require.NoError(t, err)
 	
-	// Currently the archiver generates a NEW ULID for every message it receives from NATS and inserts it into tasks.
-	// IT-002 specifically targets ensuring duplicate messages do not cause adverse side effects or crash.
-	// Since the server doesn't use message IDs from the client, duplicates will be recorded as 3 separate task log entries.
-	// However, it should NOT crash, and state machine updates (which are separate) must remain idempotent.
-	// For this test, we verify the archiver successfully processed all 3 (or deduplicated them if NATS deduplication was used).
-	// Without NATS MsgId header, it processes all 3.
-	assert.Equal(t, 3, count, "Archiver should record all 3 messages without crashing")
+	// Phase 3 adds idempotency check for 'result' type.
+	// Rapidly published duplicates should now be dropped, resulting in count 1.
+	assert.Equal(t, 1, count, "Archiver should record only the first result message (Idempotency)")
 }
 
 func TestIntegration_IT003_DelayedMessageState(t *testing.T) {
@@ -220,17 +216,17 @@ func TestIntegration_IT003_DelayedMessageState(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 
-	// Ensure the message was archived
+	// Ensure the message was DISCARDED (New behavior in Phase 3)
 	var count int
 	err = db.QueryRow(ctx, "SELECT count(*) FROM tasks WHERE thread_id = $1 AND type = 'assign'", threadID).Scan(&count)
 	require.NoError(t, err)
-	assert.Equal(t, 1, count, "Delayed message should be archived")
+	assert.Equal(t, 0, count, "Delayed message should be discarded for completed threads")
 
-	// Ensure thread state was NOT changed back to 'assigned'
+	// Ensure thread state was NOT changed
 	var status string
 	err = db.QueryRow(ctx, "SELECT status FROM threads WHERE id = $1", threadID).Scan(&status)
 	require.NoError(t, err)
-	assert.Equal(t, "done", status, "Delayed message should not break state machine, thread must remain 'done'")
+	assert.Equal(t, "done", status, "Thread must remain 'done'")
 }
 
 func TestIntegration_IT004_MassiveSubscribeLoad(t *testing.T) {
@@ -430,12 +426,19 @@ func TestIntegration_IT007_PingPongTimeout(t *testing.T) {
 	
 	conn.UnderlyingConn().Close() // Simulate network drop
 
-	// Wait a moment for readPump to fail and unregister
-	time.Sleep(1 * time.Second)
+	// Try to connect again with same ID. 
+	// We use a retry loop because unregistering the previous connection might take a moment.
+	var conn2 *websocket.Conn
+	var resp2 *http.Response
+	for i := 0; i < 5; i++ {
+		conn2, resp2, err = dialer.Dial(wsURL, nil)
+		if err == nil {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 
-	// Try to connect again with same ID. Should succeed because previous one was disconnected.
-	conn2, resp2, err := dialer.Dial(wsURL, nil)
-	require.NoError(t, err)
+	require.NoError(t, err, "Should eventually succeed in reconnecting")
 	require.Equal(t, http.StatusSwitchingProtocols, resp2.StatusCode)
 	
 	conn2.Close()
