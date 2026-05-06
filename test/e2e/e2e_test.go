@@ -1,18 +1,24 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/TatsuyaKatayama/masabbs/internal/api"
 	"github.com/TatsuyaKatayama/masabbs/internal/auth"
 	"github.com/TatsuyaKatayama/masabbs/internal/models"
 	"github.com/TatsuyaKatayama/masabbs/internal/nats"
 	"github.com/TatsuyaKatayama/masabbs/internal/worker"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/labstack/echo/v4"
 	libnats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -363,4 +369,58 @@ func TestE2E_NORMAL_004_ObserverSubscription(t *testing.T) {
 
 	assert.True(t, types["task"], "Observer should see 'task' message")
 	assert.True(t, types["result"], "Observer should see 'result' message")
+}
+
+type MockStorage struct{}
+
+func (m *MockStorage) GetThreadInputPath(threadID string) string {
+	return fmt.Sprintf("tasks/%s/input/", threadID)
+}
+func (m *MockStorage) CreateThreadFolders(ctx context.Context, threadID string) error {
+	return nil
+}
+
+func TestE2E_NORMAL_005_TaskWithToAndCC(t *testing.T) {
+	db, nc, authProvider, _, cleanup := setupE2EEnvironment(t)
+	defer cleanup()
+
+	// 1. Hub と WebSocket は不要（NATSメッセージの直接検証）
+	receivedMsg := make(chan models.MessageEnvelope, 1)
+	_, err := nc.NC.Subscribe("board.task.*", func(m *libnats.Msg) {
+		var env models.MessageEnvelope
+		json.Unmarshal(m.Data, &env)
+		receivedMsg <- env
+	})
+	require.NoError(t, err)
+
+	// 2. API を叩いてタスク発行
+	e := echo.New()
+	hub := api.NewHub(nc.NC, db)
+	api.RegisterRoutes(e, db, nc, &MockStorage{}, hub, authProvider)
+
+	reqBody := map[string]interface{}{
+		"command":          "Test To and CC",
+		"created_by_agent": "agent-a",
+		"to":               []string{"agent-b", "agent-c"},
+		"observers":        []string{"agent-o"},
+		"deadline":         time.Now().Add(1 * time.Hour).Format(time.RFC3339),
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/threads", bytes.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusCreated, rec.Code)
+
+	// 3. NATSメッセージの中身を検証
+	select {
+	case env := <-receivedMsg:
+		assert.Equal(t, "task", env.Type)
+		assert.Equal(t, []string{"agent-b", "agent-c"}, env.To)
+		assert.Equal(t, []string{"agent-o"}, env.Observers)
+		assert.Equal(t, "agent-a", env.From)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Timed out waiting for NATS message")
+	}
 }

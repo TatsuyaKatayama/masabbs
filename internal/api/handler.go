@@ -18,19 +18,18 @@ import (
 type Handler struct {
 	DB           *pgxpool.Pool
 	NATS         *nats.Client
-	Storage      *storage.Client
+	Storage      storage.StorageProvider
 	AuthProvider *auth.Provider
 }
 
 // RegisterRoutes sets up all API endpoints
-func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc *storage.Client, hub *Hub, authProvider *auth.Provider) {
+func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.StorageProvider, hub *Hub, authProvider *auth.Provider) {
 	h := &Handler{
 		DB:           db,
 		NATS:         nc,
 		Storage:      sc,
 		AuthProvider: authProvider,
 	}
-
 	api := e.Group("/api/v1")
 	api.POST("/threads", h.CreateThread)
 	api.POST("/agents/:id/credentials", h.GenerateCredentials)
@@ -47,9 +46,10 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc *storage
 type CreateThreadRequest struct {
 	Command        string   `json:"command"`
 	CreatedByAgent string   `json:"created_by_agent"`
+	To             []string `json:"to,omitempty"`
+	Observers      []string `json:"observers,omitempty"`
 	ParentThreadID *string  `json:"parent_thread_id,omitempty"`
 	Deadline       string   `json:"deadline"`
-	Observers      []string `json:"observers,omitempty"`
 }
 
 type CreateThreadResponse struct {
@@ -93,6 +93,7 @@ func (h *Handler) CreateThread(c echo.Context) error {
 		Type:      "task",
 		ThreadID:  &threadID,
 		From:      req.CreatedByAgent,
+		To:        req.To,
 		Observers: req.Observers,
 		Timestamp: time.Now().Unix(),
 		Payload:   payloadBytes,

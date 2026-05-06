@@ -6,6 +6,8 @@ import { PlayCircle, AlertCircle } from 'lucide-react';
 export default function OperationsPage() {
   const [command, setCommand] = useState('');
   const [agentId, setAgentId] = useState('admin-ui');
+  const [toAgents, setToAgents] = useState('');
+  const [observers, setObservers] = useState('');
   const [deadline, setDeadline] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
@@ -14,6 +16,9 @@ export default function OperationsPage() {
     e.preventDefault();
     setLoading(true);
     setMessage(null);
+
+    const toArray = toAgents.split(',').map(s => s.trim()).filter(s => s !== '');
+    const observersArray = observers.split(',').map(s => s.trim()).filter(s => s !== '');
 
     try {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/threads`, {
@@ -24,6 +29,8 @@ export default function OperationsPage() {
         body: JSON.stringify({
           command,
           created_by_agent: agentId,
+          to: toArray,
+          observers: observersArray,
           deadline: deadline || new Date(Date.now() + 3600000).toISOString(), // Default 1h
         }),
       });
@@ -103,6 +110,35 @@ export default function OperationsPage() {
                 id="deadline"
                 className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border bg-white text-slate-900"
                 onChange={(e) => setDeadline(new Date(e.target.value).toISOString())}
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+            <div>
+              <label htmlFor="to-agents" className="block text-sm font-medium text-slate-800">
+                To Agents (comma separated)
+              </label>
+              <input
+                type="text"
+                id="to-agents"
+                className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border bg-white text-slate-900"
+                placeholder="agentA, agentB"
+                value={toAgents}
+                onChange={(e) => setToAgents(e.target.value)}
+              />
+            </div>
+            <div>
+              <label htmlFor="observers" className="block text-sm font-medium text-slate-800">
+                CC / Observers (comma separated)
+              </label>
+              <input
+                type="text"
+                id="observers"
+                className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border bg-white text-slate-900"
+                placeholder="agentO1, agentO2"
+                value={observers}
+                onChange={(e) => setObservers(e.target.value)}
               />
             </div>
           </div>
