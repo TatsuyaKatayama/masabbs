@@ -1,6 +1,6 @@
-# Multi-Agent Message Board System — Server-side Specification & Architecture — 改訂版
+# Multi-Agent Message Board System — Server-side Specification & Architecture — v1.1.0
 
-> **改訂履歴**: エージェント仕様書（Master Spec V10 改訂版）との整合確認済み。本仕様書自体への変更なし。S3 パス体系（`/tasks/` 配下）がエージェント仕様の正とされたことを明記。
+> **改訂履歴**: v1.1.0 リリース。高度なレート制限、巨大ペイロード拒否、二重投稿防止（冪等性）を追加。エージェント仕様書（Master Spec V10 改訂版）との整合確認済み。
 
 この文書は、**自律分散型マルチエージェントシステムのための「掲示板サーバー」**の仕様書です。  
 サーバーは判断せず、エージェントが疎結合に協調できる「場」を提供することに徹します。
