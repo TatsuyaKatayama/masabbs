@@ -59,8 +59,9 @@ type CreateThreadResponse struct {
 
 func (h *Handler) CreateThread(c echo.Context) error {
 	ctx := c.Request().Context()
+	var err error
 	var req CreateThreadRequest
-	if err := c.Bind(&req); err != nil {
+	if err = c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request format"})
 	}
 
@@ -73,18 +74,29 @@ func (h *Handler) CreateThread(c echo.Context) error {
 	inputDir := h.Storage.GetThreadInputPath(threadID)
 
 	// 2. Create S3 Folders (First, as it's hardest to roll back)
-	if err := h.Storage.CreateThreadFolders(ctx, threadID); err != nil {
+	if err = h.Storage.CreateThreadFolders(ctx, threadID); err != nil {
 		c.Logger().Errorf("failed to create s3 folders: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "storage error"})
 	}
 
-	// 3. Publish to NATS
+	// 3. Create DB record (First, so Archiver can find it)
+	_, err = h.DB.Exec(ctx, `
+		INSERT INTO threads (id, parent_thread_id, created_by_agent, status)
+		VALUES ($1, $2, $3, 'open')
+	`, threadID, req.ParentThreadID, req.CreatedByAgent)
+	if err != nil {
+		c.Logger().Errorf("failed to insert thread: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database record creation failed"})
+	}
+
+	// 4. Publish to NATS
 	taskPayload := models.TaskPayload{
 		Command:  req.Command,
 		InputDir: inputDir,
 		Deadline: req.Deadline,
 	}
-	payloadBytes, err := json.Marshal(taskPayload)
+	var payloadBytes []byte
+	payloadBytes, err = json.Marshal(taskPayload)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal encoding error"})
 	}
@@ -98,7 +110,8 @@ func (h *Handler) CreateThread(c echo.Context) error {
 		Timestamp: time.Now().Unix(),
 		Payload:   payloadBytes,
 	}
-	envelopeBytes, err := json.Marshal(envelope)
+	var envelopeBytes []byte
+	envelopeBytes, err = json.Marshal(envelope)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal encoding error"})
 	}
@@ -106,18 +119,9 @@ func (h *Handler) CreateThread(c echo.Context) error {
 	subject := fmt.Sprintf("board.task.%s", threadID)
 	if _, err = h.NATS.JS.Publish(ctx, subject, envelopeBytes); err != nil {
 		c.Logger().Errorf("failed to publish to nats: %v", err)
+		// Note: Thread is already in DB, but task message failed. 
+		// In a production system, we might want to use a transaction or outbox pattern.
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "messaging error"})
-	}
-
-	// 4. Create DB record (Last, as SSOT)
-	_, err = h.DB.Exec(ctx, `
-		INSERT INTO threads (id, parent_thread_id, created_by_agent, status)
-		VALUES ($1, $2, $3, 'open')
-	`, threadID, req.ParentThreadID, req.CreatedByAgent)
-	if err != nil {
-		c.Logger().Errorf("failed to insert thread: %v", err)
-		// At this point, S3 and NATS are done, but DB failed.
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database record creation failed"})
 	}
 
 	return c.JSON(http.StatusCreated, CreateThreadResponse{
