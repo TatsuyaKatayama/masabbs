@@ -42,8 +42,8 @@ go test -v ./...
 
 ## 📚 ドキュメント
 もっと詳しく知りたい方はこちら！📖
-- [📜 サーバー仕様・アーキテクチャ](./docs/server_spec_v1.1.0.md)
-- [📝 テスト仕様書](./docs/bbs_server_test_spec_v1.1.0.md)
+- [📜 サーバー仕様・アーキテクチャ](./docs/server_spec_v1.1.1.md)
+- [📝 テスト仕様書](./docs/bbs_server_test_spec_v1.1.1.md)
 - [💬 通信プロトコル詳細](./docs/communication_spec.md)
 
 ## 📄 ライセンス
