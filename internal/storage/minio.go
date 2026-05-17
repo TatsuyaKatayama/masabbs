@@ -10,6 +10,11 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
+type StorageProvider interface {
+	GetThreadInputPath(threadID string) string
+	CreateThreadFolders(ctx context.Context, threadID string) error
+}
+
 type Client struct {
 	S3     *minio.Client
 	Bucket string

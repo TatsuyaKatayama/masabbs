@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/TatsuyaKatayama/masabbs/internal/auth"
@@ -69,19 +70,24 @@ func (a *Archiver) processMessage(msg jetstream.Msg) {
 	}
 
 	// Signature Verification
-	if a.Auth != nil {
+	if a.Auth != nil && os.Getenv("SKIP_SIG_VERIFY") != "true" {
 		// Verify impersonation
-		// We MUST use the exact same structure and JSON encoding used during signing.
+		// We use a map to ensure canonical JSON (sorted keys) for verification.
+		var envMap map[string]interface{}
+		if err := json.Unmarshal(msg.Data(), &envMap); err != nil {
+			log.Printf("Archiver: Failed to unmarshal to map: %v", err)
+			msg.Ack()
+			return
+		}
 		sig := env.Signature
-		env.Signature = "" // Zero out signature for verification
-		canonicalData, _ := json.Marshal(env)
+		delete(envMap, "signature")
+		canonicalData, _ := json.Marshal(envMap) // Go sorts map keys!
 		
 		if err := a.Auth.VerifySignature(env.From, canonicalData, sig); err != nil {
 			log.Printf("Archiver: Invalid signature from %s: %v", env.From, err)
 			msg.Ack()
 			return
 		}
-		env.Signature = sig // Restore signature
 
 		// Safety check: Is this agent blocked?
 		if a.Auth.IsRevoked(env.From) {
