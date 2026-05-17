@@ -105,16 +105,22 @@ func setupE2EEnvironment(t *testing.T) (*pgxpool.Pool, *nats.Client, *auth.Provi
 
 func signAndPublish(t *testing.T, nc *nats.Client, auth *auth.Provider, creds *auth.Credentials, env models.MessageEnvelope, subject string) {
 	env.Signature = "" // Ensure signature is empty before signing
-	data, _ := json.Marshal(env)
+
+	// ARCHIVERの検証ロジック（mapによるキーソート）に合わせる
+	var envMap map[string]interface{}
+	tempData, _ := json.Marshal(env)
+	json.Unmarshal(tempData, &envMap)
+	delete(envMap, "signature")
+	data, _ := json.Marshal(envMap)
+
 	sig, err := auth.SignMessage(creds.NKeySeed, data)
 	require.NoError(t, err)
 	env.Signature = sig
-	
+
 	finalData, _ := json.Marshal(env)
 	err = nc.NC.Publish(subject, finalData)
 	require.NoError(t, err)
 }
-
 func TestE2E_NORMAL_001_1to1Task(t *testing.T) {
 	db, nc, authProvider, creds, cleanup := setupE2EEnvironment(t)
 	defer cleanup()
