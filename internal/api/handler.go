@@ -164,7 +164,7 @@ func (h *Handler) GetTasks(c echo.Context) error {
 	}
 	defer rows.Close()
 
-	var tasks []models.MessageEnvelope
+	tasks := []models.MessageEnvelope{}
 	for rows.Next() {
 		var payload []byte
 		var msgType, agentID string
