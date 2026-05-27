@@ -10,6 +10,8 @@ export default function WebSocketHandler() {
   const updateAgent = useStore((state) => state.updateAgent);
   const updateThread = useStore((state) => state.updateThread);
   const setAgents = useStore((state) => state.setAgents);
+  const setThreads = useStore((state) => state.setThreads);
+  const setMessages = useStore((state) => state.setMessages);
 
   useEffect(() => {
     // Fetch initial data
@@ -21,6 +23,20 @@ export default function WebSocketHandler() {
         if (Array.isArray(data)) setAgents(data);
       })
       .catch(err => console.error('Failed to fetch agents:', err));
+
+    fetch(`${apiUrl}/api/v1/threads`)
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) setThreads(data);
+      })
+      .catch(err => console.error('Failed to fetch threads:', err));
+
+    fetch(`${apiUrl}/api/v1/tasks`)
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) setMessages(data);
+      })
+      .catch(err => console.error('Failed to fetch tasks:', err));
 
     if (!wsClient) return;
 

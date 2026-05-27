@@ -7,6 +7,7 @@ interface AppState {
   messages: MessageEnvelope[];
   setAgents: (agents: Agent[]) => void;
   setThreads: (threads: Thread[]) => void;
+  setMessages: (messages: MessageEnvelope[]) => void;
   addMessage: (message: MessageEnvelope) => void;
   updateAgent: (agent: Partial<Agent> & { id: string }) => void;
   updateThread: (thread: Partial<Thread> & { id: string }) => void;
@@ -18,6 +19,7 @@ export const useStore = create<AppState>((set) => ({
   messages: [],
   setAgents: (agents) => set({ agents }),
   setThreads: (threads) => set({ threads }),
+  setMessages: (messages) => set({ messages }),
   addMessage: (message) => set((state) => ({ 
     messages: [message, ...state.messages].slice(0, 500) // Keep last 500
   })),

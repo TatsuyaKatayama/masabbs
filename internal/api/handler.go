@@ -32,6 +32,7 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 	}
 	api := e.Group("/api/v1")
 	api.POST("/threads", h.CreateThread)
+	api.GET("/threads", h.GetThreads)
 	api.GET("/agents", h.GetAgents)
 	api.POST("/agents", h.CreateAgent)
 	api.POST("/agents/:id/credentials", h.GenerateCredentials)
@@ -242,4 +243,31 @@ func (h *Handler) GetAgents(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, agents)
+}
+
+func (h *Handler) GetThreads(c echo.Context) error {
+	rows, err := h.DB.Query(c.Request().Context(), `
+		SELECT id, parent_thread_id, created_by_agent, assigned_agent, status, created_at, updated_at
+		FROM threads
+		ORDER BY updated_at DESC
+	`)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+	}
+	defer rows.Close()
+
+	threads := []models.Thread{}
+	for rows.Next() {
+		var t models.Thread
+		err := rows.Scan(
+			&t.ID, &t.ParentThreadID, &t.CreatedByAgent, &t.AssignedAgent,
+			&t.Status, &t.CreatedAt, &t.UpdatedAt,
+		)
+		if err != nil {
+			continue
+		}
+		threads = append(threads, t)
+	}
+
+	return c.JSON(http.StatusOK, threads)
 }
