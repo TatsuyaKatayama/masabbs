@@ -32,8 +32,18 @@ docker compose up -d
 
 ### 2. サーバー起動 🚀
 ```bash
+# 署名検証をスキップして開発モードで起動する場合 (推奨)
+export SKIP_SIG_VERIFY=true
 go run cmd/server/main.go
 ```
+
+### 3. 管理画面 (Admin UI) 起動 🎨
+```bash
+cd web/admin
+npm install
+npm run dev
+```
+ブラウザで `http://localhost:3000` にアクセスすると、メッセージボードやエージェントの状態を確認できます！✨
 
 ## 🧪 テストの実行
 ```bash
