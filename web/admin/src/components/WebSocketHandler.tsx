@@ -9,8 +9,19 @@ export default function WebSocketHandler() {
   const addMessage = useStore((state) => state.addMessage);
   const updateAgent = useStore((state) => state.updateAgent);
   const updateThread = useStore((state) => state.updateThread);
+  const setAgents = useStore((state) => state.setAgents);
 
   useEffect(() => {
+    // Fetch initial data
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    
+    fetch(`${apiUrl}/api/v1/agents`)
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) setAgents(data);
+      })
+      .catch(err => console.error('Failed to fetch agents:', err));
+
     if (!wsClient) return;
 
     wsClient.connect();

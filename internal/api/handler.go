@@ -32,6 +32,8 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 	}
 	api := e.Group("/api/v1")
 	api.POST("/threads", h.CreateThread)
+	api.GET("/agents", h.GetAgents)
+	api.POST("/agents", h.CreateAgent)
 	api.POST("/agents/:id/credentials", h.GenerateCredentials)
 	api.GET("/tasks", h.GetTasks)
 
@@ -184,4 +186,60 @@ func (h *Handler) GetTasks(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, tasks)
+}
+
+type CreateAgentRequest struct {
+	ID     string  `json:"id"`
+	Name   string  `json:"name"`
+	Role   string  `json:"role"`
+	TeamID *string `json:"team_id,omitempty"`
+}
+
+func (h *Handler) CreateAgent(c echo.Context) error {
+	var req CreateAgentRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request format"})
+	}
+
+	if req.ID == "" || req.Name == "" || req.Role == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "id, name, and role are required"})
+	}
+
+	_, err := h.DB.Exec(c.Request().Context(), `
+		INSERT INTO agents (id, name, role, status, team_id)
+		VALUES ($1, $2, $3, 'offline', $4)
+	`, req.ID, req.Name, req.Role, req.TeamID)
+	if err != nil {
+		c.Logger().Errorf("failed to create agent: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create agent"})
+	}
+
+	return c.JSON(http.StatusCreated, map[string]string{"message": "agent created successfully"})
+}
+
+func (h *Handler) GetAgents(c echo.Context) error {
+	rows, err := h.DB.Query(c.Request().Context(), `
+		SELECT id, name, role, status, team_id, created_at, updated_at, tools, capabilities
+		FROM agents
+		ORDER BY name ASC
+	`)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+	}
+	defer rows.Close()
+
+	agents := []models.Agent{}
+	for rows.Next() {
+		var a models.Agent
+		err := rows.Scan(
+			&a.ID, &a.Name, &a.Role, &a.Status, &a.TeamID,
+			&a.CreatedAt, &a.UpdatedAt, &a.Tools, &a.Capabilities,
+		)
+		if err != nil {
+			continue
+		}
+		agents = append(agents, a)
+	}
+
+	return c.JSON(http.StatusOK, agents)
 }
