@@ -33,6 +33,7 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 	api := e.Group("/api/v1")
 	api.POST("/threads", h.CreateThread)
 	api.GET("/threads", h.GetThreads)
+	api.DELETE("/threads/:id", h.DeleteThread)
 	api.GET("/agents", h.GetAgents)
 	api.POST("/agents", h.CreateAgent)
 	api.POST("/agents/:id/credentials", h.GenerateCredentials)
@@ -47,6 +48,7 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 }
 
 type CreateThreadRequest struct {
+	ThreadID       *string  `json:"thread_id,omitempty"`
 	Command        string   `json:"command"`
 	CreatedByAgent string   `json:"created_by_agent"`
 	To             []string `json:"to,omitempty"`
@@ -72,24 +74,44 @@ func (h *Handler) CreateThread(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "command and created_by_agent are required"})
 	}
 
-	// 1. Generate ULID
-	threadID := ulid.Make().String()
-	inputDir := h.Storage.GetThreadInputPath(threadID)
+	var threadID string
+	var inputDir string
+	isExisting := false
 
-	// 2. Create S3 Folders (First, as it's hardest to roll back)
-	if err = h.Storage.CreateThreadFolders(ctx, threadID); err != nil {
-		c.Logger().Errorf("failed to create s3 folders: %v", err)
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "storage error"})
-	}
+	// 1. Determine Thread ID
+	if req.ThreadID != nil && *req.ThreadID != "" {
+		threadID = *req.ThreadID
+		// Check if thread exists
+		var exists bool
+		err = h.DB.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM threads WHERE id = $1)", threadID).Scan(&exists)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database check failed"})
+		}
+		if !exists {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "specified thread_id not found"})
+		}
+		isExisting = true
+		inputDir = h.Storage.GetThreadInputPath(threadID)
+	} else {
+		// Generate new ULID
+		threadID = ulid.Make().String()
+		inputDir = h.Storage.GetThreadInputPath(threadID)
 
-	// 3. Create DB record (First, so Archiver can find it)
-	_, err = h.DB.Exec(ctx, `
-		INSERT INTO threads (id, parent_thread_id, created_by_agent, status)
-		VALUES ($1, $2, $3, 'open')
-	`, threadID, req.ParentThreadID, req.CreatedByAgent)
-	if err != nil {
-		c.Logger().Errorf("failed to insert thread: %v", err)
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database record creation failed"})
+		// 2. Create S3 Folders
+		if err = h.Storage.CreateThreadFolders(ctx, threadID); err != nil {
+			c.Logger().Errorf("failed to create s3 folders: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "storage error"})
+		}
+
+		// 3. Create DB record
+		_, err = h.DB.Exec(ctx, `
+			INSERT INTO threads (id, parent_thread_id, created_by_agent, status)
+			VALUES ($1, $2, $3, 'open')
+		`, threadID, req.ParentThreadID, req.CreatedByAgent)
+		if err != nil {
+			c.Logger().Errorf("failed to insert thread: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database record creation failed"})
+		}
 	}
 
 	// 4. Publish to NATS
@@ -122,9 +144,12 @@ func (h *Handler) CreateThread(c echo.Context) error {
 	subject := fmt.Sprintf("board.task.%s", threadID)
 	if _, err = h.NATS.JS.Publish(ctx, subject, envelopeBytes); err != nil {
 		c.Logger().Errorf("failed to publish to nats: %v", err)
-		// Note: Thread is already in DB, but task message failed. 
-		// In a production system, we might want to use a transaction or outbox pattern.
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "messaging error"})
+	}
+
+	if isExisting {
+		// Update updated_at for sorting
+		h.DB.Exec(ctx, "UPDATE threads SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", threadID)
 	}
 
 	return c.JSON(http.StatusCreated, CreateThreadResponse{
@@ -157,7 +182,7 @@ func (h *Handler) GenerateCredentials(c echo.Context) error {
 
 func (h *Handler) GetTasks(c echo.Context) error {
 	rows, err := h.DB.Query(c.Request().Context(), `
-		SELECT payload, type, agent_id, thread_id, created_at 
+		SELECT payload, type, agent_id, thread_id, to_agents, observers, created_at 
 		FROM tasks 
 		ORDER BY created_at DESC 
 		LIMIT 100
@@ -172,8 +197,10 @@ func (h *Handler) GetTasks(c echo.Context) error {
 		var payload []byte
 		var msgType, agentID string
 		var threadID *string
+		var toAgents, observers []string
 		var createdAt time.Time
-		if err := rows.Scan(&payload, &msgType, &agentID, &threadID, &createdAt); err != nil {
+		if err := rows.Scan(&payload, &msgType, &agentID, &threadID, &toAgents, &observers, &createdAt); err != nil {
+			c.Logger().Errorf("scan error: %v", err)
 			continue
 		}
 
@@ -181,6 +208,8 @@ func (h *Handler) GetTasks(c echo.Context) error {
 			Type:      msgType,
 			ThreadID:  threadID,
 			From:      agentID,
+			To:        toAgents,
+			Observers: observers,
 			Timestamp: createdAt.Unix(),
 			Payload:   payload,
 		})
@@ -270,4 +299,36 @@ func (h *Handler) GetThreads(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, threads)
+}
+
+func (h *Handler) DeleteThread(c echo.Context) error {
+	threadID := c.Param("id")
+	if threadID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "thread id is required"})
+	}
+
+	ctx := c.Request().Context()
+	tx, err := h.DB.Begin(ctx)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to start transaction"})
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Delete associated tasks
+	_, err = tx.Exec(ctx, "DELETE FROM tasks WHERE thread_id = $1", threadID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to delete tasks"})
+	}
+
+	// 2. Delete the thread
+	_, err = tx.Exec(ctx, "DELETE FROM threads WHERE id = $1", threadID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to delete thread"})
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to commit transaction"})
+	}
+
+	return c.NoContent(http.StatusNoContent)
 }

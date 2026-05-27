@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"sync"
@@ -207,8 +208,13 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			// Get last 50 messages. In a real system, you might use a 'since' parameter.
-			rows, err := h.db.Query(ctx, "SELECT payload FROM tasks ORDER BY created_at DESC LIMIT 50")
+			// Get last 50 messages.
+			rows, err := h.db.Query(ctx, `
+				SELECT payload, type, agent_id, thread_id, to_agents, observers, created_at 
+				FROM tasks 
+				ORDER BY created_at DESC 
+				LIMIT 50
+			`)
 			if err != nil {
 				log.Printf("Failed to fetch history for %s: %v", agentID, err)
 				return
@@ -218,8 +224,24 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 			var history [][]byte
 			for rows.Next() {
 				var p []byte
-				if err := rows.Scan(&p); err == nil {
-					history = append(history, p)
+				var msgType, fromAgent string
+				var threadID *string
+				var toAgents, observers []string
+				var createdAt time.Time
+				
+				if err := rows.Scan(&p, &msgType, &fromAgent, &threadID, &toAgents, &observers, &createdAt); err == nil {
+					// Re-construct the envelope for the UI
+					env := map[string]interface{}{
+						"type":      msgType,
+						"from":      fromAgent,
+						"thread_id": threadID,
+						"to":        toAgents,
+						"observers": observers,
+						"timestamp": createdAt.Unix(),
+						"payload":   json.RawMessage(p),
+					}
+					envBytes, _ := json.Marshal(env)
+					history = append(history, envBytes)
 				}
 			}
 

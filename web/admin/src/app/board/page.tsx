@@ -7,19 +7,53 @@ import {
   Clock, 
   Hash,
   Send,
-  Layers
+  Layers,
+  ChevronDown,
+  ChevronRight,
+  Trash2
 } from 'lucide-react';
 import { useState, useMemo } from 'react';
 
 export default function BoardPage() {
   const messages = useStore((state) => state.messages);
+  const setMessages = useStore((state) => state.setMessages);
   const agents = useStore((state) => state.agents);
   const threads = useStore((state) => state.threads);
+  const setThreads = useStore((state) => state.setThreads);
   
   const [command, setCommand] = useState('');
-  const [selectedThread, setSelectedThread] = useState<string>('new');
-  const [selectedAgent, setSelectedAgent] = useState<string>('all');
+  const [threadIdInput, setThreadIdInput] = useState('');
+  const [toAgentsInput, setToAgentsInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [collapsedThreads, setCollapsedThreads] = useState<Record<string, boolean>>({});
+
+  const toggleCollapse = (threadId: string) => {
+    setCollapsedThreads(prev => ({
+      ...prev,
+      [threadId]: !prev[threadId]
+    }));
+  };
+
+  const handleDeleteThread = async (threadId: string) => {
+    if (!confirm('Are you sure you want to delete this thread and all its messages?')) return;
+
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/threads/${threadId}`, {
+        method: 'DELETE',
+      });
+
+      if (response.ok) {
+        // Refresh local state
+        setMessages(messages.filter(m => m.thread_id !== threadId));
+        setThreads(threads.filter(t => t.id !== threadId));
+      } else {
+        alert('Failed to delete thread');
+      }
+    } catch (err) {
+      console.error('Delete error:', err);
+    }
+  };
 
   // Group messages by thread_id
   const groupedMessages = useMemo(() => {
@@ -56,12 +90,12 @@ export default function BoardPage() {
         deadline: new Date(Date.now() + 3600000).toISOString(),
       };
 
-      if (selectedThread !== 'new') {
-        payload.parent_thread_id = selectedThread;
+      if (threadIdInput.trim()) {
+        payload.thread_id = threadIdInput.trim();
       }
 
-      if (selectedAgent !== 'all') {
-        payload.to = [selectedAgent];
+      if (toAgentsInput.trim()) {
+        payload.to = toAgentsInput.split(',').map(s => s.trim()).filter(s => s !== '');
       }
 
       const response = await fetch(`${apiUrl}/api/v1/threads`, {
@@ -72,6 +106,9 @@ export default function BoardPage() {
 
       if (response.ok) {
         setCommand('');
+      } else {
+        const errData = await response.json();
+        alert(`Error: ${errData.error}`);
       }
     } catch (err) {
       console.error('Failed to post task:', err);
@@ -90,19 +127,37 @@ export default function BoardPage() {
       {/* Main Board Area */}
       <div className="flex-1 overflow-y-auto space-y-8 pb-12 pr-2">
         {Object.entries(groupedMessages.groups).map(([threadId, threadMessages]) => (
-          <section key={threadId} className="bg-white shadow-sm ring-1 ring-slate-200 rounded-lg overflow-hidden border-t-4 border-indigo-500">
-            <div className="bg-slate-50 px-4 py-2 border-b border-slate-200 flex justify-between items-center">
+          <section key={threadId} className="bg-white shadow-sm ring-1 ring-slate-200 rounded-lg overflow-hidden border-t-4 border-indigo-500 transition-all">
+            <div 
+              className="bg-slate-50 px-4 py-2 border-b border-slate-200 flex justify-between items-center cursor-pointer hover:bg-slate-100"
+              onClick={() => toggleCollapse(threadId)}
+            >
               <div className="flex items-center text-indigo-700 font-bold">
+                {collapsedThreads[threadId] ? <ChevronRight className="h-4 w-4 mr-2" /> : <ChevronDown className="h-4 w-4 mr-2" />}
                 <Layers className="h-4 w-4 mr-2" />
                 <span className="text-sm font-mono">Thread: {threadId}</span>
               </div>
-              <span className="text-xs text-slate-500">{threadMessages.length} messages</span>
+              <div className="flex items-center space-x-4">
+                <span className="text-xs text-slate-500">{threadMessages.length} messages</span>
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeleteThread(threadId);
+                  }}
+                  className="p-1 text-slate-400 hover:text-red-500 transition-colors"
+                  title="Delete Thread"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
             </div>
-            <div className="p-4 space-y-4">
-              {threadMessages.map((message, idx) => (
-                <MessageItem key={idx} message={message} />
-              ))}
-            </div>
+            {!collapsedThreads[threadId] && (
+              <div className="p-4 space-y-4">
+                {threadMessages.map((message, idx) => (
+                  <MessageItem key={idx} message={message} />
+                ))}
+              </div>
+            )}
           </section>
         ))}
 
@@ -132,27 +187,27 @@ export default function BoardPage() {
         <form onSubmit={handlePostTask} className="space-y-3">
           <div className="flex gap-4 items-center">
             <div className="flex-1 flex gap-2">
-              <select 
-                value={selectedThread}
-                onChange={(e) => setSelectedThread(e.target.value)}
-                className="text-xs border border-slate-300 rounded px-2 py-1 bg-slate-50 focus:ring-1 focus:ring-indigo-500 outline-none text-slate-700"
-              >
-                <option value="new">New Thread</option>
-                {threads.map(t => (
-                  <option key={t.id} value={t.id}>Sub-task of {t.id.substring(0,8)}...</option>
-                ))}
-              </select>
+              <div className="flex items-center bg-slate-50 border border-slate-300 rounded px-2 py-1">
+                <span className="text-[10px] font-bold text-slate-500 mr-2 uppercase">Thread ID:</span>
+                <input 
+                  type="text"
+                  value={threadIdInput}
+                  onChange={(e) => setThreadIdInput(e.target.value)}
+                  placeholder="New Thread"
+                  className="text-xs bg-transparent focus:outline-none text-slate-700 w-32 font-mono"
+                />
+              </div>
 
-              <select 
-                value={selectedAgent}
-                onChange={(e) => setSelectedAgent(e.target.value)}
-                className="text-xs border border-slate-300 rounded px-2 py-1 bg-slate-50 focus:ring-1 focus:ring-indigo-500 outline-none text-slate-700"
-              >
-                <option value="all">To: All Agents</option>
-                {agents.map(a => (
-                  <option key={a.id} value={a.id}>To: {a.name}</option>
-                ))}
-              </select>
+              <div className="flex items-center bg-slate-50 border border-slate-300 rounded px-2 py-1">
+                <span className="text-[10px] font-bold text-slate-500 mr-2 uppercase">To:</span>
+                <input 
+                  type="text"
+                  value={toAgentsInput}
+                  onChange={(e) => setToAgentsInput(e.target.value)}
+                  placeholder="agent1, agent2 (All if empty)"
+                  className="text-xs bg-transparent focus:outline-none text-slate-700 w-48"
+                />
+              </div>
             </div>
           </div>
 
@@ -200,6 +255,14 @@ function MessageItem({ message }: { message: any }) {
             <User className="h-3 w-3 mr-1 text-slate-400" />
             {message.from}
           </div>
+          {message.to && message.to.length > 0 && (
+            <div className="flex items-center text-xs font-medium text-slate-500">
+              <span className="mx-1 text-slate-300">→</span>
+              <span className="bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                To: {message.to.join(', ')}
+              </span>
+            </div>
+          )}
         </div>
         <div className="flex items-center text-[10px] text-slate-400 font-medium">
           <Clock className="h-3 w-3 mr-1" />
