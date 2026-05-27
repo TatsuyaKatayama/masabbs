@@ -19,10 +19,21 @@ export const useStore = create<AppState>((set) => ({
   messages: [],
   setAgents: (agents) => set({ agents }),
   setThreads: (threads) => set({ threads }),
-  setMessages: (messages) => set({ messages }),
-  addMessage: (message) => set((state) => ({ 
-    messages: [message, ...state.messages].slice(0, 500) // Keep last 500
-  })),
+  setMessages: (messages) => set((state) => {
+    // Merge and de-duplicate by id
+    const existingIds = new Set(state.messages.map(m => m.id).filter(Boolean));
+    const newMessages = messages.filter(m => !m.id || !existingIds.has(m.id));
+    return { messages: [...newMessages, ...state.messages].slice(0, 1000) };
+  }),
+  addMessage: (message) => set((state) => {
+    // If message has id and already exists, ignore
+    if (message.id && state.messages.some(m => m.id === message.id)) {
+      return state;
+    }
+    return { 
+      messages: [message, ...state.messages].slice(0, 1000) 
+    };
+  }),
   updateAgent: (updatedAgent) => set((state) => ({
     agents: state.agents.map((a) => a.id === updatedAgent.id ? { ...a, ...updatedAgent } : a)
   })),

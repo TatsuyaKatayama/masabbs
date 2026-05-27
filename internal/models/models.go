@@ -59,6 +59,7 @@ type Task struct {
 
 // MessageEnvelope is the common structure for NATS messages (for wire communication)
 type MessageEnvelope struct {
+	ID        string          `json:"id,omitempty"`
 	Type      string          `json:"type"`
 	ThreadID  *string         `json:"thread_id,omitempty"` // Pointer for true omitempty
 	From      string          `json:"from"`

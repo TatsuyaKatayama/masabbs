@@ -210,7 +210,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 
 			// Get last 50 messages.
 			rows, err := h.db.Query(ctx, `
-				SELECT payload, type, agent_id, thread_id, to_agents, observers, created_at 
+				SELECT id, payload, type, agent_id, thread_id, to_agents, observers, created_at 
 				FROM tasks 
 				ORDER BY created_at DESC 
 				LIMIT 50
@@ -223,15 +223,17 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 
 			var history [][]byte
 			for rows.Next() {
+				var taskID string
 				var p []byte
 				var msgType, fromAgent string
 				var threadID *string
 				var toAgents, observers []string
 				var createdAt time.Time
 				
-				if err := rows.Scan(&p, &msgType, &fromAgent, &threadID, &toAgents, &observers, &createdAt); err == nil {
+				if err := rows.Scan(&taskID, &p, &msgType, &fromAgent, &threadID, &toAgents, &observers, &createdAt); err == nil {
 					// Re-construct the envelope for the UI
 					env := map[string]interface{}{
+						"id":        taskID,
 						"type":      msgType,
 						"from":      fromAgent,
 						"thread_id": threadID,

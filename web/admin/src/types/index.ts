@@ -36,6 +36,7 @@ export interface Thread {
 export type MessageType = 'task' | 'offer' | 'assign' | 'result' | 'status' | 'event' | 'shutdown';
 
 export interface MessageEnvelope {
+  id?: string;
   type: MessageType;
   thread_id?: string;
   from: string;

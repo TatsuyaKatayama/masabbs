@@ -10,7 +10,9 @@ import {
   Layers,
   ChevronDown,
   ChevronRight,
-  Trash2
+  Trash2,
+  Eye,
+  X
 } from 'lucide-react';
 import { useState, useMemo } from 'react';
 
@@ -26,6 +28,7 @@ export default function BoardPage() {
   const [toAgentsInput, setToAgentsInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [collapsedThreads, setCollapsedThreads] = useState<Record<string, boolean>>({});
+  const [previewThread, setPreviewThread] = useState<string | null>(null);
 
   const toggleCollapse = (threadId: string) => {
     setCollapsedThreads(prev => ({
@@ -53,6 +56,19 @@ export default function BoardPage() {
     } catch (err) {
       console.error('Delete error:', err);
     }
+  };
+
+  const getThreadText = (threadId: string) => {
+    const threadMsgs = messages.filter(m => m.thread_id === threadId).sort((a,b) => a.timestamp - b.timestamp);
+    return threadMsgs.map(m => {
+      const time = new Date(m.timestamp * 1000).toLocaleTimeString();
+      let content = '';
+      if (m.type === 'task') content = m.payload.command;
+      else if (m.type === 'status') content = `${m.payload.state} (${m.payload.progress}%) - ${m.payload.message || ''}`;
+      else content = JSON.stringify(m.payload);
+      
+      return `[${time}] ${m.from}: ${content}`;
+    }).join('\n');
   };
 
   // Group messages by thread_id
@@ -139,16 +155,28 @@ export default function BoardPage() {
               </div>
               <div className="flex items-center space-x-4">
                 <span className="text-xs text-slate-500">{threadMessages.length} messages</span>
-                <button 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDeleteThread(threadId);
-                  }}
-                  className="p-1 text-slate-400 hover:text-red-500 transition-colors"
-                  title="Delete Thread"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
+                <div className="flex items-center bg-white rounded-md border border-slate-200 overflow-hidden">
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setPreviewThread(threadId);
+                    }}
+                    className="p-1.5 text-slate-500 hover:bg-slate-50 transition-colors border-r border-slate-200"
+                    title="Preview History"
+                  >
+                    <Eye className="h-4 w-4" />
+                  </button>
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteThread(threadId);
+                    }}
+                    className="p-1.5 text-slate-500 hover:text-red-500 hover:bg-slate-50 transition-colors"
+                    title="Delete Thread"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
             </div>
             {!collapsedThreads[threadId] && (
@@ -181,6 +209,37 @@ export default function BoardPage() {
           </div>
         )}
       </div>
+
+      {/* Preview Modal */}
+      {previewThread && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col overflow-hidden ring-1 ring-black/5">
+            <div className="px-6 py-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
+              <div className="flex items-center space-x-2">
+                <Eye className="h-5 w-5 text-indigo-600" />
+                <h3 className="text-lg font-bold text-slate-900">Thread History Preview</h3>
+                <span className="text-xs font-mono bg-slate-200 px-2 py-0.5 rounded text-slate-600">{previewThread}</span>
+              </div>
+              <button onClick={() => setPreviewThread(null)} className="p-1 rounded-full hover:bg-slate-200 text-slate-500 transition-colors">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 bg-slate-900">
+              <pre className="text-emerald-400 font-mono text-sm leading-relaxed whitespace-pre-wrap">
+                {getThreadText(previewThread)}
+              </pre>
+            </div>
+            <div className="px-6 py-3 border-t border-slate-200 bg-slate-50 flex justify-end">
+              <button
+                onClick={() => setPreviewThread(null)}
+                className="px-4 py-2 bg-white border border-slate-300 rounded-md text-sm font-medium text-slate-700 hover:bg-slate-50 shadow-sm"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Quick Input Bar at the Bottom */}
       <div className="mt-4 bg-white p-4 shadow-lg ring-1 ring-slate-200 rounded-t-xl border-t-2 border-indigo-500 sticky bottom-0">

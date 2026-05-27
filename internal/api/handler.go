@@ -33,6 +33,7 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 	api := e.Group("/api/v1")
 	api.POST("/threads", h.CreateThread)
 	api.GET("/threads", h.GetThreads)
+	api.GET("/threads/:id/tasks", h.GetThreadTasks)
 	api.DELETE("/threads/:id", h.DeleteThread)
 	api.GET("/agents", h.GetAgents)
 	api.POST("/agents", h.CreateAgent)
@@ -182,7 +183,7 @@ func (h *Handler) GenerateCredentials(c echo.Context) error {
 
 func (h *Handler) GetTasks(c echo.Context) error {
 	rows, err := h.DB.Query(c.Request().Context(), `
-		SELECT payload, type, agent_id, thread_id, to_agents, observers, created_at 
+		SELECT id, payload, type, agent_id, thread_id, to_agents, observers, created_at 
 		FROM tasks 
 		ORDER BY created_at DESC 
 		LIMIT 100
@@ -194,17 +195,19 @@ func (h *Handler) GetTasks(c echo.Context) error {
 
 	tasks := []models.MessageEnvelope{}
 	for rows.Next() {
+		var id string
 		var payload []byte
 		var msgType, agentID string
 		var threadID *string
 		var toAgents, observers []string
 		var createdAt time.Time
-		if err := rows.Scan(&payload, &msgType, &agentID, &threadID, &toAgents, &observers, &createdAt); err != nil {
+		if err := rows.Scan(&id, &payload, &msgType, &agentID, &threadID, &toAgents, &observers, &createdAt); err != nil {
 			c.Logger().Errorf("scan error: %v", err)
 			continue
 		}
 
 		tasks = append(tasks, models.MessageEnvelope{
+			ID:        id,
 			Type:      msgType,
 			ThreadID:  threadID,
 			From:      agentID,
@@ -299,6 +302,48 @@ func (h *Handler) GetThreads(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, threads)
+}
+
+func (h *Handler) GetThreadTasks(c echo.Context) error {
+	threadID := c.Param("id")
+	if threadID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "thread id is required"})
+	}
+
+	rows, err := h.DB.Query(c.Request().Context(), `
+		SELECT payload, type, agent_id, thread_id, to_agents, observers, created_at 
+		FROM tasks 
+		WHERE thread_id = $1
+		ORDER BY created_at ASC
+	`, threadID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+	}
+	defer rows.Close()
+
+	tasks := []models.MessageEnvelope{}
+	for rows.Next() {
+		var payload []byte
+		var msgType, agentID string
+		var tID *string
+		var toAgents, observers []string
+		var createdAt time.Time
+		if err := rows.Scan(&payload, &msgType, &agentID, &tID, &toAgents, &observers, &createdAt); err != nil {
+			continue
+		}
+
+		tasks = append(tasks, models.MessageEnvelope{
+			Type:      msgType,
+			ThreadID:  tID,
+			From:      agentID,
+			To:        toAgents,
+			Observers: observers,
+			Timestamp: createdAt.Unix(),
+			Payload:   payload,
+		})
+	}
+
+	return c.JSON(http.StatusOK, tasks)
 }
 
 func (h *Handler) DeleteThread(c echo.Context) error {
