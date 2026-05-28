@@ -5,6 +5,7 @@ export interface Agent {
   id: string;
   name: string;
   role: AgentRole;
+  mission: string;
   tools: any[];
   capabilities: any[];
   status: AgentStatus;
@@ -17,6 +18,7 @@ export interface Team {
   id: string;
   name: string;
   description: string;
+  mission: string;
   created_at: string;
   updated_at: string;
 }

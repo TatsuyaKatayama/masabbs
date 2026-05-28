@@ -37,10 +37,15 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 	api.DELETE("/threads/:id", h.DeleteThread)
 	api.GET("/agents", h.GetAgents)
 	api.POST("/agents", h.CreateAgent)
+	api.GET("/agents/:id", h.GetAgent)
+	api.PATCH("/agents/:id", h.UpdateAgent)
 	api.POST("/agents/:id/credentials", h.GenerateCredentials)
 	api.GET("/tasks", h.GetTasks)
 	api.GET("/storage/files", h.ListS3Files)
 	api.GET("/storage/presign", h.GetS3PresignedURL)
+
+	api.GET("/teams", h.GetTeams)
+	api.PATCH("/teams/:id", h.UpdateTeam)
 
 	// WebSocket for Admin UI
 
@@ -224,10 +229,11 @@ func (h *Handler) GetTasks(c echo.Context) error {
 }
 
 type CreateAgentRequest struct {
-	ID     string  `json:"id"`
-	Name   string  `json:"name"`
-	Role   string  `json:"role"`
-	TeamID *string `json:"team_id,omitempty"`
+	ID      string  `json:"id"`
+	Name    string  `json:"name"`
+	Role    string  `json:"role"`
+	Mission string  `json:"mission,omitempty"`
+	TeamID  *string `json:"team_id,omitempty"`
 }
 
 func (h *Handler) CreateAgent(c echo.Context) error {
@@ -241,9 +247,9 @@ func (h *Handler) CreateAgent(c echo.Context) error {
 	}
 
 	_, err := h.DB.Exec(c.Request().Context(), `
-		INSERT INTO agents (id, name, role, status, team_id)
-		VALUES ($1, $2, $3, 'offline', $4)
-	`, req.ID, req.Name, req.Role, req.TeamID)
+		INSERT INTO agents (id, name, role, mission, status, team_id)
+		VALUES ($1, $2, $3, $4, 'offline', $5)
+	`, req.ID, req.Name, req.Role, req.Mission, req.TeamID)
 	if err != nil {
 		c.Logger().Errorf("failed to create agent: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create agent"})
@@ -254,7 +260,7 @@ func (h *Handler) CreateAgent(c echo.Context) error {
 
 func (h *Handler) GetAgents(c echo.Context) error {
 	rows, err := h.DB.Query(c.Request().Context(), `
-		SELECT id, name, role, status, team_id, created_at, updated_at, tools, capabilities
+		SELECT id, name, role, mission, status, team_id, created_at, updated_at, tools, capabilities
 		FROM agents
 		ORDER BY name ASC
 	`)
@@ -267,7 +273,7 @@ func (h *Handler) GetAgents(c echo.Context) error {
 	for rows.Next() {
 		var a models.Agent
 		err := rows.Scan(
-			&a.ID, &a.Name, &a.Role, &a.Status, &a.TeamID,
+			&a.ID, &a.Name, &a.Role, &a.Mission, &a.Status, &a.TeamID,
 			&a.CreatedAt, &a.UpdatedAt, &a.Tools, &a.Capabilities,
 		)
 		if err != nil {
@@ -277,6 +283,158 @@ func (h *Handler) GetAgents(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, agents)
+}
+
+func (h *Handler) GetAgent(c echo.Context) error {
+	id := c.Param("id")
+	if id == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "agent id is required"})
+	}
+
+	var a models.Agent
+	var teamMission *string
+	err := h.DB.QueryRow(c.Request().Context(), `
+		SELECT a.id, a.name, a.role, a.mission, a.status, a.team_id, a.created_at, a.updated_at, a.tools, a.capabilities, t.mission
+		FROM agents a
+		LEFT JOIN teams t ON a.team_id = t.id
+		WHERE a.id = $1
+	`, id).Scan(
+		&a.ID, &a.Name, &a.Role, &a.Mission, &a.Status, &a.TeamID,
+		&a.CreatedAt, &a.UpdatedAt, &a.Tools, &a.Capabilities, &teamMission,
+	)
+
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent not found"})
+	}
+
+	// We can return a custom response or just the agent.
+	// Let's return a map to include team mission easily.
+	resp := map[string]interface{}{
+		"agent":        a,
+		"team_mission": teamMission,
+	}
+
+	return c.JSON(http.StatusOK, resp)
+}
+
+type UpdateAgentRequest struct {
+	Name    *string `json:"name,omitempty"`
+	Role    *string `json:"role,omitempty"`
+	Mission *string `json:"mission,omitempty"`
+	TeamID  *string `json:"team_id,omitempty"`
+}
+
+func (h *Handler) UpdateAgent(c echo.Context) error {
+	id := c.Param("id")
+	var req UpdateAgentRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request format"})
+	}
+
+	// Dynamic update
+	query := "UPDATE agents SET updated_at = CURRENT_TIMESTAMP"
+	args := []interface{}{}
+	argIdx := 1
+
+	if req.Name != nil {
+		query += fmt.Sprintf(", name = $%d", argIdx)
+		args = append(args, *req.Name)
+		argIdx++
+	}
+	if req.Role != nil {
+		query += fmt.Sprintf(", role = $%d", argIdx)
+		args = append(args, *req.Role)
+		argIdx++
+	}
+	if req.Mission != nil {
+		query += fmt.Sprintf(", mission = $%d", argIdx)
+		args = append(args, *req.Mission)
+		argIdx++
+	}
+	if req.TeamID != nil {
+		query += fmt.Sprintf(", team_id = $%d", argIdx)
+		args = append(args, *req.TeamID)
+		argIdx++
+	}
+
+	query += fmt.Sprintf(" WHERE id = $%d", argIdx)
+	args = append(args, id)
+
+	_, err := h.DB.Exec(c.Request().Context(), query, args...)
+	if err != nil {
+		c.Logger().Errorf("failed to update agent: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update agent"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{"message": "agent updated successfully"})
+}
+
+type UpdateTeamRequest struct {
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Mission     *string `json:"mission,omitempty"`
+}
+func (h *Handler) GetTeams(c echo.Context) error {
+	rows, err := h.DB.Query(c.Request().Context(), `
+		SELECT id, name, description, mission, created_at, updated_at
+		FROM teams
+		ORDER BY name ASC
+	`)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+	}
+	defer rows.Close()
+
+	teams := []models.Team{}
+	for rows.Next() {
+		var t models.Team
+		err := rows.Scan(&t.ID, &t.Name, &t.Description, &t.Mission, &t.CreatedAt, &t.UpdatedAt)
+		if err != nil {
+			continue
+		}
+		teams = append(teams, t)
+	}
+
+	return c.JSON(http.StatusOK, teams)
+}
+
+func (h *Handler) UpdateTeam(c echo.Context) error {
+	id := c.Param("id")
+	var req UpdateTeamRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request format"})
+	}
+
+	query := "UPDATE teams SET updated_at = CURRENT_TIMESTAMP"
+	args := []interface{}{}
+	argIdx := 1
+
+	if req.Name != nil {
+		query += fmt.Sprintf(", name = $%d", argIdx)
+		args = append(args, *req.Name)
+		argIdx++
+	}
+	if req.Description != nil {
+		query += fmt.Sprintf(", description = $%d", argIdx)
+		args = append(args, *req.Description)
+		argIdx++
+	}
+	if req.Mission != nil {
+		query += fmt.Sprintf(", mission = $%d", argIdx)
+		args = append(args, *req.Mission)
+		argIdx++
+	}
+
+	query += fmt.Sprintf(" WHERE id = $%d", argIdx)
+	args = append(args, id)
+
+	_, err := h.DB.Exec(c.Request().Context(), query, args...)
+	if err != nil {
+		c.Logger().Errorf("failed to update team: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update team"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{"message": "team updated successfully"})
 }
 
 func (h *Handler) GetThreads(c echo.Context) error {

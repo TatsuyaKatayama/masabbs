@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS teams (
     id TEXT PRIMARY KEY, -- ULID
     name TEXT NOT NULL,
     description TEXT,
+    mission TEXT DEFAULT '',
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
@@ -12,6 +13,7 @@ CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY, -- NATS NKey/AgentID
     name TEXT NOT NULL,
     role TEXT NOT NULL, -- manager / worker / observer
+    mission TEXT DEFAULT '', -- Individual contribution to team mission
     tools JSONB DEFAULT '[]', -- List of tools/capabilities
     capabilities JSONB DEFAULT '[]',
     status TEXT DEFAULT 'offline', -- online / offline / busy

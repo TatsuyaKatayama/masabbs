@@ -10,6 +10,7 @@ type Team struct {
 	ID          string    `json:"id" db:"id"`
 	Name        string    `json:"name" db:"name"`
 	Description string    `json:"description" db:"description"`
+	Mission     string    `json:"mission" db:"mission"`
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 }
@@ -19,6 +20,7 @@ type Agent struct {
 	ID           string          `json:"id" db:"id"`
 	Name         string          `json:"name" db:"name"`
 	Role         string          `json:"role" db:"role"` // manager, worker, observer
+	Mission      string          `json:"mission" db:"mission"`
 	Tools        json.RawMessage `json:"tools" db:"tools"` // JSONB in DB
 	Capabilities json.RawMessage `json:"capabilities" db:"capabilities"` // JSONB in DB
 	Status       string          `json:"status" db:"status"` // online, offline, busy
