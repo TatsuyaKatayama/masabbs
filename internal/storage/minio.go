@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -13,6 +15,8 @@ import (
 type StorageProvider interface {
 	GetThreadInputPath(threadID string) string
 	CreateThreadFolders(ctx context.Context, threadID string) error
+	ListFiles(ctx context.Context, prefix string) ([]string, error)
+	GetPresignedURL(ctx context.Context, objectKey string) (string, error)
 }
 
 type Client struct {
@@ -76,6 +80,38 @@ func (c *Client) GetThreadInputPath(threadID string) string {
 // generateThreadPath returns the base path for a thread
 func (c *Client) generateThreadPath(threadID string) string {
 	return fmt.Sprintf("tasks/%s/", threadID)
+}
+
+// ListFiles lists all objects under a given prefix in the bucket
+func (c *Client) ListFiles(ctx context.Context, prefix string) ([]string, error) {
+	var files []string
+	objectCh := c.S3.ListObjects(ctx, c.Bucket, minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
+	})
+
+	for object := range objectCh {
+		if object.Err != nil {
+			return nil, object.Err
+		}
+		// Skip placeholder files
+		if strings.HasSuffix(object.Key, ".keep") {
+			continue
+		}
+		files = append(files, object.Key)
+	}
+	return files, nil
+}
+
+// GetPresignedURL generates a temporary URL for downloading an object
+func (c *Client) GetPresignedURL(ctx context.Context, objectKey string) (string, error) {
+	// Set expiration to 1 hour
+	expiry := time.Second * 3600
+	presignedURL, err := c.S3.PresignedGetObject(ctx, c.Bucket, objectKey, expiry, nil)
+	if err != nil {
+		return "", err
+	}
+	return presignedURL.String(), nil
 }
 
 // CreateThreadFolders creates the initial structure for a new thread (input, output, logs, and meta.json)

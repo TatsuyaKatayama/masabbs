@@ -385,6 +385,12 @@ func (m *MockStorage) GetThreadInputPath(threadID string) string {
 func (m *MockStorage) CreateThreadFolders(ctx context.Context, threadID string) error {
 	return nil
 }
+func (m *MockStorage) ListFiles(ctx context.Context, prefix string) ([]string, error) {
+	return []string{}, nil
+}
+func (m *MockStorage) GetPresignedURL(ctx context.Context, objectKey string) (string, error) {
+	return "http://localhost:9000/mock-url", nil
+}
 
 func TestE2E_NORMAL_005_TaskWithToAndCC(t *testing.T) {
 	db, nc, authProvider, _, cleanup := setupE2EEnvironment(t)

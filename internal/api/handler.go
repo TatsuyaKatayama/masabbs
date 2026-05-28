@@ -39,6 +39,8 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 	api.POST("/agents", h.CreateAgent)
 	api.POST("/agents/:id/credentials", h.GenerateCredentials)
 	api.GET("/tasks", h.GetTasks)
+	api.GET("/storage/files", h.ListS3Files)
+	api.GET("/storage/presign", h.GetS3PresignedURL)
 
 	// WebSocket for Admin UI
 
@@ -376,4 +378,34 @@ func (h *Handler) DeleteThread(c echo.Context) error {
 	}
 
 	return c.NoContent(http.StatusNoContent)
+}
+
+func (h *Handler) ListS3Files(c echo.Context) error {
+	prefix := c.QueryParam("prefix")
+	if prefix == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "prefix is required"})
+	}
+
+	files, err := h.Storage.ListFiles(c.Request().Context(), prefix)
+	if err != nil {
+		c.Logger().Errorf("failed to list files: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "storage error"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{"files": files})
+}
+
+func (h *Handler) GetS3PresignedURL(c echo.Context) error {
+	key := c.QueryParam("key")
+	if key == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "key is required"})
+	}
+
+	url, err := h.Storage.GetPresignedURL(c.Request().Context(), key)
+	if err != nil {
+		c.Logger().Errorf("failed to get presigned url: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "storage error"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{"url": url})
 }

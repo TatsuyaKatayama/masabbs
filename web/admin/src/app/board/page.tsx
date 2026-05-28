@@ -12,9 +12,14 @@ import {
   ChevronRight,
   Trash2,
   Eye,
-  X
+  X,
+  FileText,
+  Download,
+  Image as ImageIcon,
+  ExternalLink,
+  Loader2
 } from 'lucide-react';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 
 export default function BoardPage() {
   const messages = useStore((state) => state.messages);
@@ -328,11 +333,154 @@ function MessageItem({ message }: { message: any }) {
           {new Date(message.timestamp * 1000).toLocaleTimeString()}
         </div>
       </div>
-      <div className="text-sm text-slate-800 ml-4 border-l-2 border-slate-100 pl-4">
+      <div className="text-sm text-slate-800 ml-4 border-l-2 border-slate-100 pl-4 space-y-3">
+        {message.type === 'result' && message.payload.message && (
+          <div className="p-3 bg-green-50 text-green-800 rounded-md border border-green-100 font-medium italic">
+            {message.payload.message}
+          </div>
+        )}
+
         <pre className="bg-slate-50 text-slate-700 p-3 rounded-md overflow-x-auto font-mono text-xs border border-slate-200">
           {JSON.stringify(message.payload, null, 2)}
         </pre>
+
+        {message.type === 'result' && message.payload.output_dir && (
+          <ResultArtifacts outputDir={message.payload.output_dir} />
+        )}
       </div>
+    </div>
+  );
+}
+
+function ResultArtifacts({ outputDir }: { outputDir: string }) {
+  const [files, setFiles] = useState<string[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function fetchFiles() {
+      setIsLoading(true);
+      setError(null);
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+      try {
+        const response = await fetch(`${apiUrl}/api/v1/storage/files?prefix=${encodeURIComponent(outputDir)}`);
+        if (!response.ok) throw new Error('Failed to fetch files');
+        const data = await response.json();
+        setFiles(data.files || []);
+      } catch (err: any) {
+        setError(err.message);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    if (outputDir) {
+      fetchFiles();
+    }
+  }, [outputDir]);
+
+  if (isLoading) return (
+    <div className="flex items-center space-x-2 text-xs text-slate-500 animate-pulse">
+      <Loader2 className="h-3 w-3 animate-spin" />
+      <span>Fetching artifacts from S3...</span>
+    </div>
+  );
+  
+  if (error) return <div className="text-xs text-red-500 italic">Error loading artifacts: {error}</div>;
+  if (files.length === 0) return null;
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg overflow-hidden shadow-sm max-w-2xl">
+      <div className="bg-slate-50 px-3 py-1.5 border-b border-slate-200 flex items-center justify-between">
+        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center">
+          <Layers className="h-3 w-3 mr-1.5" />
+          Artifacts in {outputDir}
+        </span>
+      </div>
+      <div className="p-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {files.map((file) => (
+          <ArtifactItem key={file} fileKey={file} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ArtifactItem({ fileKey }: { fileKey: string }) {
+  const [presignedUrl, setPresignedUrl] = useState<string | null>(null);
+  const [isGettingUrl, setIsGettingUrl] = useState(false);
+  
+  const fileName = fileKey.split('/').pop() || fileKey;
+  const isImage = /\.(png|jpe?g|gif|svg|webp)$/i.test(fileName);
+
+  const getPresignedUrl = async () => {
+    if (presignedUrl) return presignedUrl;
+    
+    setIsGettingUrl(true);
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/storage/presign?key=${encodeURIComponent(fileKey)}`);
+      if (!response.ok) throw new Error('Failed to get URL');
+      const data = await response.json();
+      setPresignedUrl(data.url);
+      return data.url;
+    } catch (err) {
+      console.error(err);
+      return null;
+    } finally {
+      setIsGettingUrl(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isImage) {
+      getPresignedUrl();
+    }
+  }, [isImage]);
+
+  return (
+    <div className="flex flex-col border border-slate-100 rounded-md bg-slate-50/50 hover:bg-slate-50 transition-colors">
+      <div className="flex items-center justify-between p-2">
+        <div className="flex items-center min-w-0 flex-1">
+          {isImage ? <ImageIcon className="h-4 w-4 mr-2 text-indigo-500 shrink-0" /> : <FileText className="h-4 w-4 mr-2 text-slate-400 shrink-0" />}
+          <span className="text-xs font-medium text-slate-700 truncate" title={fileName}>{fileName}</span>
+        </div>
+        <div className="flex items-center space-x-1 ml-2">
+          {presignedUrl ? (
+            <a 
+              href={presignedUrl} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-white rounded transition-all"
+              title="Download/Open"
+              download={fileName}
+            >
+              <Download className="h-3.5 w-3.5" />
+            </a>
+          ) : (
+            <button 
+              onClick={() => getPresignedUrl()}
+              disabled={isGettingUrl}
+              className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-white rounded transition-all"
+              title="Get Download Link"
+            >
+              {isGettingUrl ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+            </button>
+          )}
+        </div>
+      </div>
+      {isImage && presignedUrl && (
+        <div className="px-2 pb-2">
+          <div className="relative group rounded border border-slate-200 overflow-hidden bg-white">
+            <img 
+              src={presignedUrl} 
+              alt={fileName} 
+              className="w-full h-auto max-h-48 object-contain"
+            />
+            <div className="absolute inset-0 bg-slate-900/0 group-hover:bg-slate-900/10 transition-colors pointer-events-none" />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
