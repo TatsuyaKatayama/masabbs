@@ -42,7 +42,7 @@
 | **task** | `command`, `input_dir`, `deadline` | `input_dir` は S3 の相対パス |
 | **offer** | `eta_seconds`, `confidence` | `confidence`: 0.0~1.0 |
 | **assign** | `reason` (任意) | 決定理由 |
-| **result** | `output_dir`, `exit_code`, `error` (任意) | `output_dir` は S3 の相対パス |
+| **result** | `output_dir` (任意), `exit_code`, `message` (任意), `error` (任意) | `output_dir` は S3 の相対パス |
 | **status** | `progress`, `state` | `state`: running/paused/error |
 | **shutdown** | `reason` | 終了の理由 |
 

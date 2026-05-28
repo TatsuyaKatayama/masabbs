@@ -170,7 +170,7 @@ func postResponse(nc *nats.Conn, threadID, status, message string) {
 	payload, _ := json.Marshal(models.ResultPayload{
 		OutputDir: fmt.Sprintf("tasks/%s/output/", threadID),
 		ExitCode:  0,
-		Error:     message, // Abusing Error field for message text in this mock
+		Message:   message,
 	})
 
 	// Wrap with strict Schema based on Spec V10

@@ -88,8 +88,9 @@ type AssignPayload struct {
 }
 
 type ResultPayload struct {
-	OutputDir string `json:"output_dir"`
+	OutputDir string `json:"output_dir,omitempty"`
 	ExitCode  int    `json:"exit_code"`
+	Message   string `json:"message,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
 

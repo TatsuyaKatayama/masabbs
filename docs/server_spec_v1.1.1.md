@@ -144,7 +144,7 @@
 ```
 
 > **注意（エージェント実装者向け）**: `thread_id` は必ず **ULID 形式**とし、サーバーが発行した値を使用すること。エージェントが独自に生成した UUID や任意文字列は拒否される（400）。  
-> `post_response()` スキルはインターフェース上 `(status, message)` の2引数だが、内部でこれらの必須フィールドを自動補完してパブリッシュする。
+> `post_response()` スキルは `(output_dir, exit_code, message, error)` などの引数をとり、内部でこれらを `result` ペイロードとしてパブリッシュする。 `message` フィールドはテキストメッセージの返信に使用できる。
 
 ## observers の扱い
 - observer は **subscribe-only**
