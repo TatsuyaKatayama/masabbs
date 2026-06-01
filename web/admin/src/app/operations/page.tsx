@@ -21,7 +21,7 @@ export default function OperationsPage() {
     const observersArray = observers.split(',').map(s => s.trim()).filter(s => s !== '');
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'}/api/v1/threads`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/v1/threads`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

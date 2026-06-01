@@ -45,7 +45,7 @@ export default function BoardPage() {
   const handleDeleteThread = async (threadId: string) => {
     if (!confirm('Are you sure you want to delete this thread and all its messages?')) return;
 
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     try {
       const response = await fetch(`${apiUrl}/api/v1/threads/${threadId}`, {
         method: 'DELETE',
@@ -103,7 +103,7 @@ export default function BoardPage() {
     if (!command.trim()) return;
 
     setIsSubmitting(true);
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     try {
       const payload: any = {
         command,
@@ -361,7 +361,7 @@ function ResultArtifacts({ outputDir }: { outputDir: string }) {
     async function fetchFiles() {
       setIsLoading(true);
       setError(null);
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
       try {
         const response = await fetch(`${apiUrl}/api/v1/storage/files?prefix=${encodeURIComponent(outputDir)}`);
         if (!response.ok) throw new Error('Failed to fetch files');
@@ -417,7 +417,7 @@ function ArtifactItem({ fileKey }: { fileKey: string }) {
     if (presignedUrl) return presignedUrl;
     
     setIsGettingUrl(true);
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     try {
       const response = await fetch(`${apiUrl}/api/v1/storage/presign?key=${encodeURIComponent(fileKey)}`);
       if (!response.ok) throw new Error('Failed to get URL');

@@ -69,5 +69,5 @@ class WebSocketClient {
 }
 
 export const wsClient = typeof window !== 'undefined' 
-  ? new WebSocketClient(process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080/ws', 'admin-ui')
+  ? new WebSocketClient(process.env.NEXT_PUBLIC_WS_URL || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`, 'admin-ui')
   : null;

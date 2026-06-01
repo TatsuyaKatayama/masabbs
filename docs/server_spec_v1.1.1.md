@@ -69,7 +69,14 @@
                              | HTTPS / WSS
                              v
 +----------------------------+----------------------------+
-|           Go API / WebSocket Server                    |
+|           Nginx Reverse Proxy (Port 80)                |
+|  - /      -> Admin UI                                  |
+|  - /api/  -> Go API                                    |
+|  - /ws    -> WebSocket Hub                             |
++----------------------------+----------------------------+
+                             |
++----------------------------+----------------------------+
+|           Go API / WebSocket Server (Internal)         |
 |  - REST API (HTTPS)                                    |
 |  - WebSocket Hub (WSS)  <- Admin UI 専用               |
 |  - NATS Client (publish/subscribe)                     |

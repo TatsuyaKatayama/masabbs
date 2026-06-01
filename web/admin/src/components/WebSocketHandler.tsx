@@ -15,7 +15,7 @@ export default function WebSocketHandler() {
 
   useEffect(() => {
     // Fetch initial data
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     
     fetch(`${apiUrl}/api/v1/agents`)
       .then(res => res.json())
@@ -76,7 +76,7 @@ export default function WebSocketHandler() {
 
     return () => {
       unsubscribe();
-      wsClient.disconnect();
+      wsClient?.disconnect();
     };
   }, [addMessage, updateAgent, updateThread]);
 

@@ -6,14 +6,10 @@ on:
   pull_request:
     branches: [ "develop", "main" ]
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
-  test:
-    name: Run All Tests (UT, IT, E2E)
+  go-backend:
+    name: Go Backend Tests & Build
     runs-on: ubuntu-latest
-    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,16 +18,56 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
-          cache-dependency-path: 'go.sum'
 
       - name: Download Dependencies
         run: go mod download
 
-      - name: Run Unit Tests
-        run: go test -v ./internal/models/... ./internal/storage/... ./internal/api/...
+      - name: Run Tests
+        run: go test -v ./...
 
-      - name: Run Integration Tests
-        run: go test -v ./internal/db/... ./test/integration/...
+      - name: Build Server
+        run: go build -o server ./cmd/server/main.go
 
-      - name: Run E2E Tests
-        run: go test -v ./test/e2e/...
+  admin-ui:
+    name: Admin UI Build & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: 'web/admin/package-lock.json'
+
+      - name: Install dependencies
+        run: |
+          cd web/admin
+          npm ci
+
+      - name: Lint
+        run: |
+          cd web/admin
+          npm run lint
+
+      - name: Build
+        run: |
+          cd web/admin
+          npm run build
+
+  docker-build:
+    name: Docker Image Build Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Server Image
+        run: docker build -t masabbs-server -f Dockerfile.server .
+
+      - name: Build Admin Image
+        run: |
+          cd web/admin
+          docker build -t masabbs-admin .

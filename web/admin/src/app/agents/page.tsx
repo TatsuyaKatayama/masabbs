@@ -46,7 +46,7 @@ export default function AgentsPage() {
   });
 
   const refreshAgents = async () => {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     try {
       const res = await fetch(`${apiUrl}/api/v1/agents`);
       const data = await res.json();
@@ -57,7 +57,7 @@ export default function AgentsPage() {
   };
 
   const refreshTeams = async () => {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     try {
       const res = await fetch(`${apiUrl}/api/v1/teams`);
       const data = await res.json();
@@ -96,7 +96,7 @@ export default function AgentsPage() {
     setIsSubmitting(true);
     setError(null);
 
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     try {
       const response = await fetch(`${apiUrl}/api/v1/teams/${selectedTeam.id}`, {
         method: 'PATCH',
@@ -125,7 +125,7 @@ export default function AgentsPage() {
     setIsSubmitting(true);
     setError(null);
 
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     try {
       const response = await fetch(`${apiUrl}/api/v1/agents/${selectedAgent.id}`, {
         method: 'PATCH',
@@ -152,7 +152,7 @@ export default function AgentsPage() {
     setIsSubmitting(true);
     setError(null);
 
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     try {
       const response = await fetch(`${apiUrl}/api/v1/agents`, {
         method: 'POST',
