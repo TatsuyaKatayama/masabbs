@@ -78,7 +78,7 @@ export default function WebSocketHandler() {
       unsubscribe();
       wsClient?.disconnect();
     };
-  }, [addMessage, updateAgent, updateThread]);
+  }, [addMessage, updateAgent, updateThread, setAgents, setMessages, setThreads]);
 
   return null;
 }

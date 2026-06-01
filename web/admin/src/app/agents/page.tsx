@@ -13,7 +13,7 @@ import {
   LayoutGrid,
   Edit2
 } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Agent, Team } from '@/types';
 
 export default function AgentsPage() {
@@ -45,7 +45,7 @@ export default function AgentsPage() {
     mission: ''
   });
 
-  const refreshAgents = async () => {
+  const refreshAgents = useCallback(async () => {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     try {
       const res = await fetch(`${apiUrl}/api/v1/agents`);
@@ -54,9 +54,9 @@ export default function AgentsPage() {
     } catch (err) {
       console.error('Failed to refresh agents:', err);
     }
-  };
+  }, [setAgents]);
 
-  const refreshTeams = async () => {
+  const refreshTeams = useCallback(async () => {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     try {
       const res = await fetch(`${apiUrl}/api/v1/teams`);
@@ -65,12 +65,12 @@ export default function AgentsPage() {
     } catch (err) {
       console.error('Failed to refresh teams:', err);
     }
-  };
+  }, []);
 
   useEffect(() => {
     refreshAgents();
     refreshTeams();
-  }, []);
+  }, [refreshAgents, refreshTeams]);
 
   const handleOpenDetails = (agent: Agent) => {
     setSelectedAgent(agent);
@@ -111,8 +111,8 @@ export default function AgentsPage() {
 
       setIsTeamModalOpen(false);
       refreshTeams();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      if (err instanceof Error) setError(err.message);
     } finally {
       setIsSubmitting(false);
     }
@@ -140,8 +140,8 @@ export default function AgentsPage() {
 
       setIsDetailModalOpen(false);
       refreshAgents();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      if (err instanceof Error) setError(err.message);
     } finally {
       setIsSubmitting(false);
     }
@@ -170,8 +170,8 @@ export default function AgentsPage() {
       setIsModalOpen(false);
       setFormData({ id: '', name: '', role: 'worker', mission: '', team_id: '01H0V6P6V6P6V6P6V6P6V6P6V6' });
       refreshAgents();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      if (err instanceof Error) setError(err.message);
     } finally {
       setIsSubmitting(false);
     }
@@ -211,7 +211,7 @@ export default function AgentsPage() {
             </div>
             <div className="p-6">
               <p className="text-sm text-slate-600 italic leading-relaxed">
-                "{team.mission || 'No overall mission defined for this team yet.'}"
+                &quot;{team.mission || 'No overall mission defined for this team yet.'}&quot;
               </p>
             </div>
           </div>

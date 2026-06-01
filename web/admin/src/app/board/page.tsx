@@ -5,7 +5,6 @@ import {
   MessageSquare, 
   User, 
   Clock, 
-  Hash,
   Send,
   Layers,
   ChevronDown,
@@ -16,15 +15,14 @@ import {
   FileText,
   Download,
   Image as ImageIcon,
-  ExternalLink,
   Loader2
 } from 'lucide-react';
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
+import { MessageEnvelope } from '@/types';
 
 export default function BoardPage() {
   const messages = useStore((state) => state.messages);
   const setMessages = useStore((state) => state.setMessages);
-  const agents = useStore((state) => state.agents);
   const threads = useStore((state) => state.threads);
   const setThreads = useStore((state) => state.setThreads);
   
@@ -68,7 +66,7 @@ export default function BoardPage() {
     return threadMsgs.map(m => {
       const time = new Date(m.timestamp * 1000).toLocaleTimeString();
       let content = '';
-      if (m.type === 'task') content = m.payload.command;
+      if (m.type === 'task') content = m.payload.command as string;
       else if (m.type === 'status') content = `${m.payload.state} (${m.payload.progress}%) - ${m.payload.message || ''}`;
       else content = JSON.stringify(m.payload);
       
@@ -105,7 +103,7 @@ export default function BoardPage() {
     setIsSubmitting(true);
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     try {
-      const payload: any = {
+      const payload: Record<string, unknown> = {
         command,
         created_by_agent: 'admin-ui',
         deadline: new Date(Date.now() + 3600000).toISOString(),
@@ -301,7 +299,7 @@ export default function BoardPage() {
   );
 }
 
-function MessageItem({ message }: { message: any }) {
+function MessageItem({ message }: { message: MessageEnvelope }) {
   return (
     <div className="border-b border-slate-100 last:border-0 pb-4 last:pb-0">
       <div className="flex justify-between items-start mb-2">
@@ -309,7 +307,6 @@ function MessageItem({ message }: { message: any }) {
           <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
             message.type === 'task' ? 'bg-blue-600 text-white' :
             message.type === 'result' ? 'bg-green-600 text-white' :
-            message.type === 'error' ? 'bg-red-600 text-white' :
             message.type === 'status' ? 'bg-amber-500 text-white' :
             'bg-slate-500 text-white'
           }`}>
@@ -336,7 +333,7 @@ function MessageItem({ message }: { message: any }) {
       <div className="text-sm text-slate-800 ml-4 border-l-2 border-slate-100 pl-4 space-y-3">
         {message.type === 'result' && message.payload.message && (
           <div className="p-3 bg-green-50 text-green-800 rounded-md border border-green-100 font-medium italic">
-            {message.payload.message}
+            {message.payload.message as string}
           </div>
         )}
 
@@ -345,7 +342,7 @@ function MessageItem({ message }: { message: any }) {
         </pre>
 
         {message.type === 'result' && message.payload.output_dir && (
-          <ResultArtifacts outputDir={message.payload.output_dir} />
+          <ResultArtifacts outputDir={message.payload.output_dir as string} />
         )}
       </div>
     </div>
@@ -367,8 +364,8 @@ function ResultArtifacts({ outputDir }: { outputDir: string }) {
         if (!response.ok) throw new Error('Failed to fetch files');
         const data = await response.json();
         setFiles(data.files || []);
-      } catch (err: any) {
-        setError(err.message);
+      } catch (err) {
+        if (err instanceof Error) setError(err.message);
       } finally {
         setIsLoading(false);
       }
@@ -413,7 +410,7 @@ function ArtifactItem({ fileKey }: { fileKey: string }) {
   const fileName = fileKey.split('/').pop() || fileKey;
   const isImage = /\.(png|jpe?g|gif|svg|webp)$/i.test(fileName);
 
-  const getPresignedUrl = async () => {
+  const getPresignedUrl = useCallback(async () => {
     if (presignedUrl) return presignedUrl;
     
     setIsGettingUrl(true);
@@ -430,13 +427,13 @@ function ArtifactItem({ fileKey }: { fileKey: string }) {
     } finally {
       setIsGettingUrl(false);
     }
-  };
+  }, [fileKey, presignedUrl]);
 
   useEffect(() => {
     if (isImage) {
       getPresignedUrl();
     }
-  }, [isImage]);
+  }, [isImage, getPresignedUrl]);
 
   return (
     <div className="flex flex-col border border-slate-100 rounded-md bg-slate-50/50 hover:bg-slate-50 transition-colors">

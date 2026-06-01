@@ -6,8 +6,8 @@ export interface Agent {
   name: string;
   role: AgentRole;
   mission: string;
-  tools: any[];
-  capabilities: any[];
+  tools: Record<string, unknown>[];
+  capabilities: string[];
   status: AgentStatus;
   team_id?: string;
   created_at: string;
@@ -45,7 +45,7 @@ export interface MessageEnvelope {
   to?: string[];
   observers?: string[];
   timestamp: number;
-  payload: any;
+  payload: Record<string, unknown>;
 }
 
 export interface Task {
@@ -55,6 +55,6 @@ export interface Task {
   type: MessageType;
   to_agents?: string[];
   observers?: string[];
-  payload: any;
+  payload: Record<string, unknown>;
   created_at: string;
 }
