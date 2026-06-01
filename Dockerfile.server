@@ -1,7 +1,8 @@
 # Build stage
-FROM golang:1.24-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
+RUN apk add --no-cache git ca-certificates
 
 # Copy go mod and sum files
 COPY go.mod go.sum ./
@@ -17,6 +18,7 @@ RUN go build -o main ./cmd/server/main.go
 FROM alpine:latest
 
 WORKDIR /app
+RUN apk add --no-cache git ca-certificates
 
 # Copy the binary from the builder stage
 COPY --from=builder /app/main .
