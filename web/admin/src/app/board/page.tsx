@@ -334,7 +334,7 @@ function MessageItem({ message }: { message: MessageEnvelope }) {
       <div className="text-sm text-slate-800 ml-4 border-l-2 border-slate-100 pl-4 space-y-3">
         {message.type === 'result' && typeof message.payload.message === 'string' && (
           <div className="p-3 bg-green-50 text-green-800 rounded-md border border-green-100 font-medium italic">
-            {message.payload.message}
+            {message.payload.message as string}
           </div>
         )}
 
@@ -343,7 +343,7 @@ function MessageItem({ message }: { message: MessageEnvelope }) {
         </pre>
 
         {message.type === 'result' && typeof message.payload.output_dir === 'string' && (
-          <ResultArtifacts outputDir={message.payload.output_dir} />
+          <ResultArtifacts outputDir={message.payload.output_dir as string} />
         )}
       </div>
     </div>
@@ -431,9 +431,14 @@ function ArtifactItem({ fileKey }: { fileKey: string }) {
   }, [fileKey, presignedUrl]);
 
   useEffect(() => {
+    let ignore = false;
     if (isImage && !presignedUrl && !isGettingUrl) {
-      getPresignedUrl();
+      // Defer to avoid synchronous setState in effect
+      Promise.resolve().then(() => {
+        if (!ignore) getPresignedUrl();
+      });
     }
+    return () => { ignore = true; };
   }, [isImage, presignedUrl, isGettingUrl, getPresignedUrl]);
 
   return (
