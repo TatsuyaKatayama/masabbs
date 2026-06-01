@@ -68,8 +68,8 @@ export default function AgentsPage() {
   }, []);
 
   useEffect(() => {
-    refreshAgents();
-    refreshTeams();
+    Promise.resolve().then(() => refreshAgents());
+    Promise.resolve().then(() => refreshTeams());
   }, [refreshAgents, refreshTeams]);
 
   const handleOpenDetails = (agent: Agent) => {
@@ -110,7 +110,7 @@ export default function AgentsPage() {
       }
 
       setIsTeamModalOpen(false);
-      refreshTeams();
+      Promise.resolve().then(() => refreshTeams());
     } catch (err) {
       if (err instanceof Error) setError(err.message);
     } finally {
@@ -139,7 +139,7 @@ export default function AgentsPage() {
       }
 
       setIsDetailModalOpen(false);
-      refreshAgents();
+      Promise.resolve().then(() => refreshAgents());
     } catch (err) {
       if (err instanceof Error) setError(err.message);
     } finally {
@@ -169,7 +169,7 @@ export default function AgentsPage() {
 
       setIsModalOpen(false);
       setFormData({ id: '', name: '', role: 'worker', mission: '', team_id: '01H0V6P6V6P6V6P6V6P6V6P6V6' });
-      refreshAgents();
+      Promise.resolve().then(() => refreshAgents());
     } catch (err) {
       if (err instanceof Error) setError(err.message);
     } finally {
