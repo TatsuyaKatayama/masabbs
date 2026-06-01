@@ -51,7 +51,7 @@ export default function WebSocketHandler() {
         case 'status':
           updateAgent({
             id: message.from,
-            status: message.payload.state === 'running' ? 'busy' : 'online'
+            status: typeof message.payload.state === 'string' && message.payload.state === 'running' ? 'busy' : 'online'
           });
           break;
         case 'assign':

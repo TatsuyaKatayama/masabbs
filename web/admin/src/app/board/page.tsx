@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { MessageEnvelope } from '@/types';
+import Image from 'next/image';
 
 export default function BoardPage() {
   const messages = useStore((state) => state.messages);
@@ -331,9 +332,9 @@ function MessageItem({ message }: { message: MessageEnvelope }) {
         </div>
       </div>
       <div className="text-sm text-slate-800 ml-4 border-l-2 border-slate-100 pl-4 space-y-3">
-        {message.type === 'result' && message.payload.message && (
+        {message.type === 'result' && typeof message.payload.message === 'string' && (
           <div className="p-3 bg-green-50 text-green-800 rounded-md border border-green-100 font-medium italic">
-            {message.payload.message as string}
+            {message.payload.message}
           </div>
         )}
 
@@ -341,8 +342,8 @@ function MessageItem({ message }: { message: MessageEnvelope }) {
           {JSON.stringify(message.payload, null, 2)}
         </pre>
 
-        {message.type === 'result' && message.payload.output_dir && (
-          <ResultArtifacts outputDir={message.payload.output_dir as string} />
+        {message.type === 'result' && typeof message.payload.output_dir === 'string' && (
+          <ResultArtifacts outputDir={message.payload.output_dir} />
         )}
       </div>
     </div>
@@ -430,10 +431,10 @@ function ArtifactItem({ fileKey }: { fileKey: string }) {
   }, [fileKey, presignedUrl]);
 
   useEffect(() => {
-    if (isImage) {
+    if (isImage && !presignedUrl && !isGettingUrl) {
       getPresignedUrl();
     }
-  }, [isImage, getPresignedUrl]);
+  }, [isImage, presignedUrl, isGettingUrl, getPresignedUrl]);
 
   return (
     <div className="flex flex-col border border-slate-100 rounded-md bg-slate-50/50 hover:bg-slate-50 transition-colors">
@@ -469,9 +470,12 @@ function ArtifactItem({ fileKey }: { fileKey: string }) {
       {isImage && presignedUrl && (
         <div className="px-2 pb-2">
           <div className="relative group rounded border border-slate-200 overflow-hidden bg-white">
-            <img 
+            <Image 
               src={presignedUrl} 
               alt={fileName} 
+              width={400}
+              height={300}
+              unoptimized
               className="w-full h-auto max-h-48 object-contain"
             />
             <div className="absolute inset-0 bg-slate-900/0 group-hover:bg-slate-900/10 transition-colors pointer-events-none" />
