@@ -37,6 +37,7 @@ export default function AgentsPage() {
   });
 
   const [detailFormData, setDetailFormData] = useState({
+    name: '',
     role: 'worker',
     mission: ''
   });
@@ -75,10 +76,34 @@ export default function AgentsPage() {
   const handleOpenDetails = (agent: Agent) => {
     setSelectedAgent(agent);
     setDetailFormData({
+      name: agent.name,
       role: agent.role,
       mission: agent.mission || ''
     });
     setIsDetailModalOpen(true);
+  };
+
+  const handleDeleteAgent = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this agent? This will also remove all associated relations.')) {
+      return;
+    }
+
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/agents/${id}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to delete agent');
+      }
+
+      setIsDetailModalOpen(false);
+      Promise.resolve().then(() => refreshAgents());
+    } catch (err) {
+      if (err instanceof Error) alert(err.message);
+    }
   };
 
   const handleOpenTeamEdit = (team: Team) => {
@@ -449,6 +474,17 @@ export default function AgentsPage() {
               )}
 
               <div className="grid grid-cols-1 gap-6">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Name</label>
+                  <input
+                    type="text"
+                    required
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                    value={detailFormData.name}
+                    onChange={(e) => setDetailFormData({ ...detailFormData, name: e.target.value })}
+                  />
+                </div>
+
                 <div className="space-y-4">
                   <div className="flex items-center space-x-2 text-indigo-700 mb-2">
                     <Shield className="h-4 w-4" />
@@ -489,22 +525,31 @@ export default function AgentsPage() {
                 </div>
               </div>
 
-              <div className="pt-4 flex justify-end space-x-3 border-t border-slate-100 mt-6">
+              <div className="pt-4 flex justify-between items-center border-t border-slate-100 mt-6">
                 <button
                   type="button"
-                  onClick={() => setIsDetailModalOpen(false)}
-                  className="px-6 py-2 text-sm font-medium text-slate-600 hover:text-slate-800 transition-colors"
+                  onClick={() => handleDeleteAgent(selectedAgent.id)}
+                  className="px-4 py-2 text-sm font-bold text-red-600 hover:text-red-700 hover:bg-red-50 rounded-md transition-colors"
                 >
-                  Close
+                  Delete Agent
                 </button>
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-bold flex items-center shadow-md active:transform active:scale-95 transition-all disabled:opacity-50"
-                >
-                  <Save className="h-4 w-4 mr-2" />
-                  {isSubmitting ? 'Saving...' : 'Save Changes'}
-                </button>
+                <div className="flex space-x-3">
+                  <button
+                    type="button"
+                    onClick={() => setIsDetailModalOpen(false)}
+                    className="px-6 py-2 text-sm font-medium text-slate-600 hover:text-slate-800 transition-colors"
+                  >
+                    Close
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-bold flex items-center shadow-md active:transform active:scale-95 transition-all disabled:opacity-50"
+                  >
+                    <Save className="h-4 w-4 mr-2" />
+                    {isSubmitting ? 'Saving...' : 'Save Changes'}
+                  </button>
+                </div>
               </div>
             </form>
           </div>

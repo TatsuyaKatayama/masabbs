@@ -39,6 +39,7 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 	api.POST("/agents", h.CreateAgent)
 	api.GET("/agents/:id", h.GetAgent)
 	api.PATCH("/agents/:id", h.UpdateAgent)
+	api.DELETE("/agents/:id", h.DeleteAgent)
 	api.GET("/agents/:id/network", h.GetAgentNetwork)
 	api.GET("/teams/:id/blueprint", h.GetTeamBlueprint)
 
@@ -386,6 +387,44 @@ func (h *Handler) UpdateAgent(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"message": "agent updated successfully"})
+}
+
+func (h *Handler) DeleteAgent(c echo.Context) error {
+	id := c.Param("id")
+	if id == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "agent id is required"})
+	}
+
+	ctx := c.Request().Context()
+	
+	// Start a transaction to ensure both relations and agent are deleted
+	tx, err := h.DB.Begin(ctx)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to start transaction"})
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Delete relations where this agent is either source or target
+	_, err = tx.Exec(ctx, "DELETE FROM agent_relations WHERE source_id = $1 OR target_id = $1", id)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to delete agent relations"})
+	}
+
+	// 2. Delete the agent
+	res, err := tx.Exec(ctx, "DELETE FROM agents WHERE id = $1", id)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to delete agent"})
+	}
+
+	if res.RowsAffected() == 0 {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent not found"})
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to commit transaction"})
+	}
+
+	return c.NoContent(http.StatusNoContent)
 }
 
 type UpdateTeamRequest struct {
