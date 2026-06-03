@@ -71,3 +71,68 @@ jobs:
         run: |
           cd web/admin
           docker build -t masabbs-admin .
+
+  docker-compose-test:
+    name: Docker Compose Connectivity Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Start services
+        run: docker compose up -d --build
+
+      - name: Wait for services to be healthy
+        run: |
+          # Wait up to 2 minutes
+          for i in {1..24}; do
+            if docker compose ps | grep -q "unhealthy"; then
+              echo "Waiting for unhealthy services..."
+            elif [ "$(docker compose ps --filter "status=running" -q | wc -l)" -eq "6" ]; then
+              # All 6 services (nats, db, minio, server, admin, proxy) should be running
+              # Note: Some services might not have explicit healthchecks but should be up
+              echo "All services are up."
+              break
+            fi
+            echo "Attempt $i: Services not ready yet..."
+            docker compose ps
+            sleep 5
+          done
+
+      - name: Verify Proxy Connectivity (API)
+        run: |
+          # Test API through proxy on port 80
+          # We expect a 200 from /health
+          MAX_RETRIES=10
+          for i in $(seq 1 $MAX_RETRIES); do
+            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/health || echo "failed")
+            if [ "$RESPONSE" == "200" ]; then
+              echo "Successfully connected to API through proxy!"
+              exit 0
+            fi
+            echo "Attempt $i: API not reachable through proxy (Status: $RESPONSE). Retrying..."
+            sleep 5
+          done
+          echo "Failed to connect to API through proxy"
+          docker compose logs proxy
+          docker compose logs server
+          exit 1
+
+      - name: Verify NATS Direct Connectivity
+        run: |
+          # Test if NATS port is accessible directly (for masatools/integration tests)
+          nc -zv localhost 4222
+
+      - name: Verify DB Direct Connectivity
+        run: |
+          # Test if DB port is accessible directly
+          nc -zv localhost 5432
+
+      - name: Verify MinIO Direct Connectivity
+        run: |
+          # Test if MinIO port is accessible directly
+          nc -zv localhost 9000
+
+      - name: Shutdown services
+        if: always()
+        run: docker compose down -v
