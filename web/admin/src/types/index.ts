@@ -10,8 +10,21 @@ export interface Agent {
   capabilities: string[];
   status: AgentStatus;
   team_id?: string;
+  ui_pos_x: number;
+  ui_pos_y: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface AgentRelation {
+  id: string;
+  team_id: string;
+  source_id: string;
+  target_id: string;
+  source_handle?: string;
+  target_handle?: string;
+  relation_type: 'boss' | 'coworker';
+  relation_category: 'vertical' | 'horizontal';
 }
 
 export interface Team {
@@ -21,6 +34,12 @@ export interface Team {
   mission: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface TeamBlueprint {
+  team_id: string;
+  structure_mermaid: string;
+  members: Agent[];
 }
 
 export type ThreadStatus = 'open' | 'assigned' | 'collecting' | 'processing' | 'done' | 'error';

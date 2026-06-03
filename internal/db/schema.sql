@@ -18,16 +18,24 @@ CREATE TABLE IF NOT EXISTS agents (
     capabilities JSONB DEFAULT '[]',
     status TEXT DEFAULT 'offline', -- online / offline / busy
     team_id TEXT REFERENCES teams(id),
+    ui_pos_x FLOAT DEFAULT 0, -- Admin UI position
+    ui_pos_y FLOAT DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
--- Agent Relations (Hierarchical structure)
-CREATE TABLE IF NOT EXISTS agent_relations (
-    parent_agent_id TEXT REFERENCES agents(id),
-    child_agent_id TEXT REFERENCES agents(id),
-    relation_type TEXT NOT NULL DEFAULT 'manages',
-    PRIMARY KEY (parent_agent_id, child_agent_id)
+-- Agent Relations (Graph structure v1.2.0)
+DROP TABLE IF EXISTS agent_relations;
+CREATE TABLE agent_relations (
+    id TEXT PRIMARY KEY, -- ULID
+    team_id TEXT REFERENCES teams(id) ON DELETE CASCADE,
+    source_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+    target_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+    source_handle TEXT, -- "t", "b", "l", "r"
+    target_handle TEXT, -- "t", "b", "l", "r"
+    relation_type TEXT NOT NULL, -- leader / subordinate / consultant / reviewer
+    relation_category TEXT NOT NULL, -- vertical / horizontal
+    CONSTRAINT unique_relation UNIQUE (source_id, target_id, relation_type)
 );
 
 -- Threads Table

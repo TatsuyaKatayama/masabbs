@@ -21,19 +21,47 @@ type Agent struct {
 	Name         string          `json:"name" db:"name"`
 	Role         string          `json:"role" db:"role"` // manager, worker, observer
 	Mission      string          `json:"mission" db:"mission"`
-	Tools        json.RawMessage `json:"tools" db:"tools"` // JSONB in DB
+	Tools        json.RawMessage `json:"tools" db:"tools"`               // JSONB in DB
 	Capabilities json.RawMessage `json:"capabilities" db:"capabilities"` // JSONB in DB
-	Status       string          `json:"status" db:"status"` // online, offline, busy
+	Status       string          `json:"status" db:"status"`             // online, offline, busy
 	TeamID       *string         `json:"team_id,omitempty" db:"team_id"`
+	UIPosX       float64         `json:"ui_pos_x" db:"ui_pos_x"`
+	UIPosY       float64         `json:"ui_pos_y" db:"ui_pos_y"`
 	CreatedAt    time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at" db:"updated_at"`
 }
 
-// AgentRelation defines hierarchical management between agents
+// AgentRelation defines directional relationships between agents in a team (v1.2.0)
 type AgentRelation struct {
-	ParentAgentID string `json:"parent_agent_id" db:"parent_agent_id"`
-	ChildAgentID  string `json:"child_agent_id" db:"child_agent_id"`
-	RelationType  string `json:"relation_type" db:"relation_type"`
+	ID               string `json:"id" db:"id"`
+	TeamID           string `json:"team_id" db:"team_id"`
+	SourceID         string `json:"source_id" db:"source_id"`
+	TargetID         string `json:"target_id" db:"target_id"`
+	SourceHandle     string `json:"source_handle" db:"source_handle"`
+	TargetHandle     string `json:"target_handle" db:"target_handle"`
+	RelationType     string `json:"relation_type" db:"relation_type"`         // leader, subordinate, consultant, reviewer
+	RelationCategory string `json:"relation_category" db:"relation_category"` // vertical, horizontal
+}
+
+// NetworkMember represents an adjacent agent with a relative relation
+type NetworkMember struct {
+	AgentID      string          `json:"agent_id"`
+	Relation     RelationInfo    `json:"relation"`
+	Mission      string          `json:"mission"`
+	Status       string          `json:"status"`
+	Capabilities json.RawMessage `json:"capabilities"`
+}
+
+type RelationInfo struct {
+	Category string `json:"category"`
+	Type     string `json:"type"`
+}
+
+// TeamBlueprint represents the team structure for LLM understanding
+type TeamBlueprint struct {
+	TeamID           string  `json:"team_id"`
+	StructureMermaid string  `json:"structure_mermaid"`
+	Members          []Agent `json:"members"`
 }
 
 // Thread represents a task thread

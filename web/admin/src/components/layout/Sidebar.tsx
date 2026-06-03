@@ -7,12 +7,14 @@ import {
   Network, 
   MessageSquare, 
   PlayCircle, 
-  Settings 
+  Settings,
+  Map
 } from 'lucide-react';
 
 const navigation = [
   { name: 'Agents', href: '/agents', icon: Users },
   { name: 'Org Tree', href: '/org', icon: Network },
+  { name: 'Overview', href: '/overview', icon: Map },
   { name: 'Message Board', href: '/board', icon: MessageSquare },
   { name: 'Operations', href: '/operations', icon: PlayCircle },
 ];

@@ -39,13 +39,18 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 	api.POST("/agents", h.CreateAgent)
 	api.GET("/agents/:id", h.GetAgent)
 	api.PATCH("/agents/:id", h.UpdateAgent)
-	api.POST("/agents/:id/credentials", h.GenerateCredentials)
+	api.GET("/agents/:id/network", h.GetAgentNetwork)
+	api.GET("/teams/:id/blueprint", h.GetTeamBlueprint)
+
 	api.GET("/tasks", h.GetTasks)
 	api.GET("/storage/files", h.ListS3Files)
 	api.GET("/storage/presign", h.GetS3PresignedURL)
 
 	api.GET("/teams", h.GetTeams)
 	api.PATCH("/teams/:id", h.UpdateTeam)
+	api.GET("/teams/:id/relations", h.GetTeamRelations)
+	api.POST("/relations", h.CreateRelation)
+	api.DELETE("/relations/:id", h.DeleteRelation)
 
 	// WebSocket for Admin UI
 
@@ -260,9 +265,9 @@ func (h *Handler) CreateAgent(c echo.Context) error {
 
 func (h *Handler) GetAgents(c echo.Context) error {
 	rows, err := h.DB.Query(c.Request().Context(), `
-		SELECT id, name, role, mission, status, team_id, created_at, updated_at, tools, capabilities
+		SELECT id, name, role, mission, status, team_id, ui_pos_x, ui_pos_y, created_at, updated_at, tools, capabilities
 		FROM agents
-		ORDER BY name ASC
+		ORDER BY created_at DESC
 	`)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
@@ -274,8 +279,10 @@ func (h *Handler) GetAgents(c echo.Context) error {
 		var a models.Agent
 		err := rows.Scan(
 			&a.ID, &a.Name, &a.Role, &a.Mission, &a.Status, &a.TeamID,
+			&a.UIPosX, &a.UIPosY,
 			&a.CreatedAt, &a.UpdatedAt, &a.Tools, &a.Capabilities,
 		)
+
 		if err != nil {
 			continue
 		}
@@ -318,10 +325,12 @@ func (h *Handler) GetAgent(c echo.Context) error {
 }
 
 type UpdateAgentRequest struct {
-	Name    *string `json:"name,omitempty"`
-	Role    *string `json:"role,omitempty"`
-	Mission *string `json:"mission,omitempty"`
-	TeamID  *string `json:"team_id,omitempty"`
+	Name    *string  `json:"name,omitempty"`
+	Role    *string  `json:"role,omitempty"`
+	Mission *string  `json:"mission,omitempty"`
+	TeamID  *string  `json:"team_id,omitempty"`
+	UIPosX  *float64 `json:"ui_pos_x,omitempty"`
+	UIPosY  *float64 `json:"ui_pos_y,omitempty"`
 }
 
 func (h *Handler) UpdateAgent(c echo.Context) error {
@@ -354,6 +363,16 @@ func (h *Handler) UpdateAgent(c echo.Context) error {
 	if req.TeamID != nil {
 		query += fmt.Sprintf(", team_id = $%d", argIdx)
 		args = append(args, *req.TeamID)
+		argIdx++
+	}
+	if req.UIPosX != nil {
+		query += fmt.Sprintf(", ui_pos_x = $%d", argIdx)
+		args = append(args, *req.UIPosX)
+		argIdx++
+	}
+	if req.UIPosY != nil {
+		query += fmt.Sprintf(", ui_pos_y = $%d", argIdx)
+		args = append(args, *req.UIPosY)
 		argIdx++
 	}
 
@@ -566,4 +585,223 @@ func (h *Handler) GetS3PresignedURL(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"url": url})
+}
+
+// GetAgentNetwork returns the adjacent agents and their relative relations (v1.2.0)
+func (h *Handler) GetAgentNetwork(c echo.Context) error {
+	ctx := c.Request().Context()
+	agentID := c.Param("id")
+
+	// TODO: Authorization check (JWT subject must match agentID)
+
+	query := `
+		SELECT 
+			CASE 
+				WHEN r.source_id = $1 THEN r.target_id 
+				ELSE r.source_id 
+			END as adjacent_id,
+			r.relation_type,
+			r.relation_category,
+			r.source_id,
+			a.mission,
+			a.status,
+			a.capabilities
+		FROM agent_relations r
+		JOIN agents a ON (
+			CASE 
+				WHEN r.source_id = $1 THEN r.target_id = a.id 
+				ELSE r.source_id = a.id 
+			END
+		)
+		WHERE r.source_id = $1 OR r.target_id = $1
+	`
+
+	rows, err := h.DB.Query(ctx, query, agentID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to query network"})
+	}
+	defer rows.Close()
+
+	var network []models.NetworkMember
+	for rows.Next() {
+		var member models.NetworkMember
+		var relType, relCat, sourceID string
+		if err := rows.Scan(
+			&member.AgentID,
+			&relType,
+			&relCat,
+			&sourceID,
+			&member.Mission,
+			&member.Status,
+			&member.Capabilities,
+		); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to scan network member"})
+		}
+
+		// Relative role transformation
+		transformedType := relType
+		if relCat == "vertical" {
+			if sourceID == agentID {
+				// I am the boss (Source)
+				transformedType = "subordinate"
+			} else {
+				// I am the subordinate (Target)
+				transformedType = "boss"
+			}
+		} else {
+			// Horizontal/Coworker - symmetric
+			transformedType = "coworker"
+		}
+
+		member.Relation = models.RelationInfo{
+			Category: relCat,
+			Type:     transformedType,
+		}
+		network = append(network, member)
+	}
+
+	return c.JSON(http.StatusOK, network)
+}
+
+// GetTeamBlueprint returns the Mermaid diagram and member profiles (v1.2.0)
+func (h *Handler) GetTeamBlueprint(c echo.Context) error {
+	ctx := c.Request().Context()
+	teamID := c.Param("id")
+
+	// 1. Fetch all members of the team
+	rows, err := h.DB.Query(ctx, "SELECT id, name, role, mission, status, team_id, ui_pos_x, ui_pos_y, created_at, updated_at, tools, capabilities FROM agents WHERE team_id = $1", teamID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to fetch team members"})
+	}
+	defer rows.Close()
+
+	var blueprint models.TeamBlueprint
+	blueprint.TeamID = teamID
+
+	mermaid := "graph TD\n"
+	for rows.Next() {
+		var a models.Agent
+		if err := rows.Scan(&a.ID, &a.Name, &a.Role, &a.Mission, &a.Status, &a.TeamID, &a.UIPosX, &a.UIPosY, &a.CreatedAt, &a.UpdatedAt, &a.Tools, &a.Capabilities); err != nil {
+			continue
+		}
+		blueprint.Members = append(blueprint.Members, a)
+		// Define node to handle isolated agents: AgentID["Name (Role)"]
+		mermaid += fmt.Sprintf("  %s[\"%s (%s)\"]\n", a.ID, a.Name, a.Role)
+	}
+
+	// 2. Fetch all relations in the team for edges
+	relRows, err := h.DB.Query(ctx, "SELECT source_id, target_id, relation_type FROM agent_relations WHERE team_id = $1", teamID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to fetch relations"})
+	}
+	defer relRows.Close()
+
+	for relRows.Next() {
+		var src, tgt, rType string
+		if err := relRows.Scan(&src, &tgt, &rType); err != nil {
+			continue
+		}
+
+		if rType == "boss" {
+			// A commands B
+			mermaid += fmt.Sprintf("  %s -- \"instruct\" --> %s\n", src, tgt)
+		} else if rType == "coworker" {
+			// A and B cooperate
+			mermaid += fmt.Sprintf("  %s -- \"cooperates with\" <--> %s\n", src, tgt)
+		} else {
+			// Fallback for any other types
+			mermaid += fmt.Sprintf("  %s -- \"%s\" --> %s\n", src, rType, tgt)
+		}
+	}
+	blueprint.StructureMermaid = mermaid
+
+	return c.JSON(http.StatusOK, blueprint)
+}
+
+type CreateRelationRequest struct {
+	TeamID       string `json:"team_id"`
+	SourceID     string `json:"source_id"`
+	TargetID     string `json:"target_id"`
+	SourceHandle string `json:"source_handle"`
+	TargetHandle string `json:"target_handle"`
+	RelationType string `json:"relation_type"`
+}
+
+func (h *Handler) CreateRelation(c echo.Context) error {
+	ctx := c.Request().Context()
+	var req CreateRelationRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request format"})
+	}
+
+	// Validate preset relation types and derive category
+	var category string
+	switch req.RelationType {
+	case "boss":
+		category = "vertical"
+	case "coworker":
+		category = "horizontal"
+	default:
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid relation_type. Use 'boss' or 'coworker'"})
+	}
+
+	// Application-level validation: Source and Target must belong to the same team
+	var sameTeam bool
+	err := h.DB.QueryRow(ctx, "SELECT (SELECT team_id FROM agents WHERE id = $1) = (SELECT team_id FROM agents WHERE id = $2)", req.SourceID, req.TargetID).Scan(&sameTeam)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to validate team membership"})
+	}
+	if !sameTeam {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "agents must belong to the same team"})
+	}
+
+	id := ulid.Make().String()
+	_, err = h.DB.Exec(ctx, `
+		INSERT INTO agent_relations (id, team_id, source_id, target_id, source_handle, target_handle, relation_type, relation_category)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (source_id, target_id, relation_type) 
+		DO UPDATE SET 
+			source_handle = EXCLUDED.source_handle,
+			target_handle = EXCLUDED.target_handle,
+			team_id = EXCLUDED.team_id,
+			relation_category = EXCLUDED.relation_category
+	`, id, req.TeamID, req.SourceID, req.TargetID, req.SourceHandle, req.TargetHandle, req.RelationType, category)
+
+	if err != nil {
+		c.Logger().Errorf("failed to create relation: %v", err)
+		return c.JSON(http.StatusConflict, map[string]string{"error": "relation already exists or database error"})
+	}
+
+	return c.JSON(http.StatusCreated, map[string]string{"id": id})
+}
+
+func (h *Handler) DeleteRelation(c echo.Context) error {
+	id := c.Param("id")
+	_, err := h.DB.Exec(c.Request().Context(), "DELETE FROM agent_relations WHERE id = $1", id)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to delete relation"})
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (h *Handler) GetTeamRelations(c echo.Context) error {
+	ctx := c.Request().Context()
+	teamID := c.Param("id")
+
+	rows, err := h.DB.Query(ctx, "SELECT id, team_id, source_id, target_id, source_handle, target_handle, relation_type, relation_category FROM agent_relations WHERE team_id = $1", teamID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to fetch relations"})
+	}
+	defer rows.Close()
+
+	var relations []models.AgentRelation
+	for rows.Next() {
+		var r models.AgentRelation
+		if err := rows.Scan(&r.ID, &r.TeamID, &r.SourceID, &r.TargetID, &r.SourceHandle, &r.TargetHandle, &r.RelationType, &r.RelationCategory); err != nil {
+			continue
+		}
+		relations = append(relations, r)
+	}
+
+	return c.JSON(http.StatusOK, relations)
 }
