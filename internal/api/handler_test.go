@@ -197,3 +197,26 @@ func TestTeamOrganizationAPI(t *testing.T) {
 		assert.Len(t, blueprint.Members, 5)
 	})
 }
+
+func TestHealthCheck(t *testing.T) {
+	db, cleanup := setupDB(t)
+	defer cleanup()
+
+	e := echo.New()
+	h := &Handler{DB: db}
+
+	t.Run("HealthCheck success", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+
+		err := h.HealthCheck(c)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, rec.Code)
+
+		var resp map[string]string
+		err = json.Unmarshal(rec.Body.Bytes(), &resp)
+		require.NoError(t, err)
+		assert.Equal(t, "ok", resp["status"])
+	})
+}

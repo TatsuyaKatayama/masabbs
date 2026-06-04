@@ -31,6 +31,7 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 		AuthProvider: authProvider,
 	}
 	api := e.Group("/api/v1")
+	api.GET("/health", h.HealthCheck)
 	api.POST("/threads", h.CreateThread)
 	api.GET("/threads", h.GetThreads)
 	api.GET("/threads/:id/tasks", h.GetThreadTasks)
@@ -170,6 +171,13 @@ func (h *Handler) CreateThread(c echo.Context) error {
 		ThreadID: threadID,
 		InputDir: inputDir,
 	})
+}
+
+func (h *Handler) HealthCheck(c echo.Context) error {
+	if err := h.DB.Ping(c.Request().Context()); err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"status": "db error"})
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (h *Handler) GenerateCredentials(c echo.Context) error {
