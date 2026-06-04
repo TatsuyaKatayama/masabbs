@@ -111,10 +111,12 @@ func (a *Archiver) processMessage(msg jetstream.Msg) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	var err error
+
 	// Thread Check & Idempotency
 	if env.ThreadID != nil && *env.ThreadID != "" {
 		var threadStatus string
-		err := a.DB.QueryRow(ctx, "SELECT status FROM threads WHERE id = $1", *env.ThreadID).Scan(&threadStatus)
+		err = a.DB.QueryRow(ctx, "SELECT status FROM threads WHERE id = $1", *env.ThreadID).Scan(&threadStatus)
 		if err != nil {
 			log.Printf("Archiver: Thread %s not found. Dropping message.", *env.ThreadID)
 			msg.Ack()
@@ -160,7 +162,7 @@ func (a *Archiver) processMessage(msg jetstream.Msg) {
 
 	taskID := ulid.Make().String()
 
-	_, err := a.DB.Exec(ctx, `
+	_, err = a.DB.Exec(ctx, `
 		INSERT INTO tasks (id, thread_id, agent_id, type, to_agents, observers, payload)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, taskID, env.ThreadID, env.From, env.Type, env.To, env.Observers, env.Payload)
