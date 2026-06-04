@@ -404,32 +404,17 @@ func (h *Handler) DeleteAgent(c echo.Context) error {
 	}
 
 	ctx := c.Request().Context()
-	
-	// Start a transaction to ensure both relations and agent are deleted
-	tx, err := h.DB.Begin(ctx)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to start transaction"})
-	}
-	defer tx.Rollback(ctx)
 
-	// 1. Delete relations where this agent is either source or target
-	_, err = tx.Exec(ctx, "DELETE FROM agent_relations WHERE source_id = $1 OR target_id = $1", id)
+	// With CASCADE delete on agent_relations, threads, tasks, and logs,
+	// we just need to delete the agent record.
+	res, err := h.DB.Exec(ctx, "DELETE FROM agents WHERE id = $1", id)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to delete agent relations"})
-	}
-
-	// 2. Delete the agent
-	res, err := tx.Exec(ctx, "DELETE FROM agents WHERE id = $1", id)
-	if err != nil {
+		c.Logger().Errorf("failed to delete agent: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to delete agent"})
 	}
 
 	if res.RowsAffected() == 0 {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent not found"})
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to commit transaction"})
 	}
 
 	return c.NoContent(http.StatusNoContent)
@@ -537,8 +522,8 @@ func (h *Handler) GetThreadTasks(c echo.Context) error {
 	}
 
 	rows, err := h.DB.Query(c.Request().Context(), `
-		SELECT payload, type, agent_id, thread_id, to_agents, observers, created_at 
-		FROM tasks 
+		SELECT id, payload, type, agent_id, thread_id, to_agents, observers, created_at
+		FROM tasks
 		WHERE thread_id = $1
 		ORDER BY created_at ASC
 	`, threadID)
@@ -549,16 +534,18 @@ func (h *Handler) GetThreadTasks(c echo.Context) error {
 
 	tasks := []models.MessageEnvelope{}
 	for rows.Next() {
+		var id string
 		var payload []byte
 		var msgType, agentID string
 		var tID *string
 		var toAgents, observers []string
 		var createdAt time.Time
-		if err := rows.Scan(&payload, &msgType, &agentID, &tID, &toAgents, &observers, &createdAt); err != nil {
+		if err := rows.Scan(&id, &payload, &msgType, &agentID, &tID, &toAgents, &observers, &createdAt); err != nil {
 			continue
 		}
 
 		tasks = append(tasks, models.MessageEnvelope{
+			ID:        id,
 			Type:      msgType,
 			ThreadID:  tID,
 			From:      agentID,
@@ -579,26 +566,17 @@ func (h *Handler) DeleteThread(c echo.Context) error {
 	}
 
 	ctx := c.Request().Context()
-	tx, err := h.DB.Begin(ctx)
+	
+	// CASCADE is set on tasks, threads (parent_thread_id), and logs.
+	// Deleting the thread will automatically delete all associated data.
+	res, err := h.DB.Exec(ctx, "DELETE FROM threads WHERE id = $1", threadID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to start transaction"})
-	}
-	defer tx.Rollback(ctx)
-
-	// 1. Delete associated tasks
-	_, err = tx.Exec(ctx, "DELETE FROM tasks WHERE thread_id = $1", threadID)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to delete tasks"})
-	}
-
-	// 2. Delete the thread
-	_, err = tx.Exec(ctx, "DELETE FROM threads WHERE id = $1", threadID)
-	if err != nil {
+		c.Logger().Errorf("failed to delete thread: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to delete thread"})
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to commit transaction"})
+	if res.RowsAffected() == 0 {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "thread not found"})
 	}
 
 	return c.NoContent(http.StatusNoContent)

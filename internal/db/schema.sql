@@ -41,9 +41,9 @@ CREATE TABLE agent_relations (
 -- Threads Table
 CREATE TABLE IF NOT EXISTS threads (
     id TEXT PRIMARY KEY, -- ULID
-    parent_thread_id TEXT REFERENCES threads(id),
-    created_by_agent TEXT REFERENCES agents(id),
-    assigned_agent TEXT REFERENCES agents(id),
+    parent_thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE,
+    created_by_agent TEXT REFERENCES agents(id) ON DELETE CASCADE,
+    assigned_agent TEXT REFERENCES agents(id) ON DELETE SET NULL,
     status TEXT NOT NULL DEFAULT 'open', -- open / assigned / collecting / processing / done / error
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
@@ -53,8 +53,8 @@ CREATE TABLE IF NOT EXISTS threads (
 -- Includes 'observers' and other fields from the communication spec
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY, -- ULID
-    thread_id TEXT REFERENCES threads(id),
-    agent_id TEXT REFERENCES agents(id), -- The 'from' field
+    thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE,
+    agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE, -- The 'from' field
     type TEXT NOT NULL, -- task / offer / assign / result / status / event / shutdown
     to_agents TEXT[], -- Array of agent_ids
     observers TEXT[], -- Array of agent_ids
@@ -65,8 +65,8 @@ CREATE TABLE IF NOT EXISTS tasks (
 -- Logs Table for debugging and history
 CREATE TABLE IF NOT EXISTS logs (
     id BIGSERIAL PRIMARY KEY,
-    thread_id TEXT REFERENCES threads(id), -- NULL allowed for thread-independent logs (e.g. agent startup)
-    agent_id TEXT REFERENCES agents(id),
+    thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE, -- NULL allowed for thread-independent logs (e.g. agent startup)
+    agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
     level TEXT NOT NULL, -- info / warn / error
     message TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
