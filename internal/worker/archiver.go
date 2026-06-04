@@ -130,33 +130,27 @@ func (a *Archiver) processMessage(msg jetstream.Msg) {
 			return
 		}
 
-		// Improved Idempotency Check: Prevent duplicate messages for the same thread/agent/type/payload
-		var exists bool
-		err = a.DB.QueryRow(ctx, `
-			SELECT EXISTS(
-				SELECT 1 FROM tasks 
-				WHERE thread_id = $1 AND agent_id = $2 AND type = $3 AND payload = $4
-			)
-		`, env.ThreadID, env.From, env.Type, env.Payload).Scan(&exists)
-		
-		if err == nil && exists {
-			// log.Printf("Archiver: Duplicate message detected from agent %s for thread %s. Dropping.", env.From, *env.ThreadID)
+		// Rejection based on Thread Status
+		if env.Type == "assign" && threadStatus == "assigned" {
+			log.Printf("Archiver: Thread %s is already assigned. Dropping duplicate assignment from %s.", *env.ThreadID, env.From)
 			msg.Ack()
 			return
 		}
-	} else {
-		// For general messages (no thread_id), check idempotency by agent/type/payload
-		var exists bool
-		err = a.DB.QueryRow(ctx, `
-			SELECT EXISTS(
-				SELECT 1 FROM tasks 
-				WHERE thread_id IS NULL AND agent_id = $1 AND type = $2 AND payload = $3
-			)
-		`, env.From, env.Type, env.Payload).Scan(&exists)
-		
-		if err == nil && exists {
-			msg.Ack()
-			return
+
+		// Idempotency Check for 'result' from the same agent
+		if env.Type == "result" {
+			var exists bool
+			err = a.DB.QueryRow(ctx, `
+				SELECT EXISTS(
+					SELECT 1 FROM tasks 
+					WHERE thread_id = $1 AND agent_id = $2 AND type = 'result'
+				)
+			`, env.ThreadID, env.From).Scan(&exists)
+			
+			if err == nil && exists {
+				msg.Ack()
+				return
+			}
 		}
 	}
 
