@@ -50,6 +50,9 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 
 	api.GET("/teams", h.GetTeams)
 	api.PATCH("/teams/:id", h.UpdateTeam)
+	api.GET("/teams/:id/agents", h.GetTeamAgents)
+	api.POST("/teams/:id/agents/:agent_id", h.AddTeamAgent)
+	api.DELETE("/teams/:id/agents/:agent_id", h.RemoveTeamAgent)
 	api.GET("/teams/:id/relations", h.GetTeamRelations)
 	api.POST("/relations", h.CreateRelation)
 	api.DELETE("/relations/:id", h.DeleteRelation)
@@ -62,6 +65,8 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 	RegisterThreadSnapshotRoutes(e, db)
 	api.GET("/configs/export", h.ExportConfig)
 	api.POST("/configs/import", h.ImportConfig)
+	api.GET("/snapshot/export", h.ExportSnapshot)
+	api.POST("/snapshot/import", h.ImportSnapshot)
 
 	// WebSocket for Admin UI
 
@@ -70,7 +75,6 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 		return nil
 	})
 }
-
 
 type CreateThreadRequest struct {
 	ThreadID       *string  `json:"thread_id,omitempty"`
@@ -87,7 +91,6 @@ type CreateThreadResponse struct {
 	ThreadID string `json:"thread_id"`
 	InputDir string `json:"input_dir"`
 }
-
 
 func (h *Handler) CreateThread(c echo.Context) error {
 	ctx := c.Request().Context()
@@ -140,7 +143,6 @@ func (h *Handler) CreateThread(c echo.Context) error {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database record creation failed"})
 		}
 	}
-
 
 	// 4. Publish to NATS
 	taskPayload := models.TaskPayload{
@@ -256,11 +258,10 @@ func (h *Handler) GetTasks(c echo.Context) error {
 }
 
 type CreateAgentRequest struct {
-	ID      string  `json:"id"`
-	Name    string  `json:"name"`
-	Role    string  `json:"role"`
-	Mission string  `json:"mission,omitempty"`
-	TeamID  *string `json:"team_id,omitempty"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Role    string `json:"role"`
+	Mission string `json:"mission,omitempty"`
 }
 
 func (h *Handler) CreateAgent(c echo.Context) error {
@@ -274,9 +275,9 @@ func (h *Handler) CreateAgent(c echo.Context) error {
 	}
 
 	_, err := h.DB.Exec(c.Request().Context(), `
-		INSERT INTO agents (id, name, role, mission, status, team_id)
-		VALUES ($1, $2, $3, $4, 'offline', $5)
-	`, req.ID, req.Name, req.Role, req.Mission, req.TeamID)
+		INSERT INTO agents (id, name, role, mission, status)
+		VALUES ($1, $2, $3, $4, 'offline')
+	`, req.ID, req.Name, req.Role, req.Mission)
 	if err != nil {
 		c.Logger().Errorf("failed to create agent: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create agent"})
@@ -438,6 +439,7 @@ type UpdateTeamRequest struct {
 	Description *string `json:"description,omitempty"`
 	Mission     *string `json:"mission,omitempty"`
 }
+
 func (h *Handler) GetTeams(c echo.Context) error {
 	rows, err := h.DB.Query(c.Request().Context(), `
 		SELECT id, name, description, mission, created_at, updated_at
@@ -460,6 +462,94 @@ func (h *Handler) GetTeams(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, teams)
+}
+
+func (h *Handler) GetTeamAgents(c echo.Context) error {
+	teamID := c.Param("id")
+	if teamID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "team id is required"})
+	}
+
+	rows, err := h.DB.Query(c.Request().Context(), `
+		SELECT a.id, a.name, a.role, a.mission, a.status, a.team_id, a.ui_pos_x, a.ui_pos_y, a.created_at, a.updated_at, a.tools, a.capabilities
+		FROM agents a
+		INNER JOIN team_agents ta ON ta.agent_id = a.id
+		WHERE ta.team_id = $1
+		ORDER BY a.created_at DESC
+	`, teamID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+	}
+	defer rows.Close()
+
+	agents := []models.Agent{}
+	for rows.Next() {
+		var agent models.Agent
+		if err := rows.Scan(
+			&agent.ID, &agent.Name, &agent.Role, &agent.Mission, &agent.Status, &agent.TeamID,
+			&agent.UIPosX, &agent.UIPosY, &agent.CreatedAt, &agent.UpdatedAt, &agent.Tools, &agent.Capabilities,
+		); err != nil {
+			continue
+		}
+		agents = append(agents, agent)
+	}
+
+	return c.JSON(http.StatusOK, agents)
+}
+
+func (h *Handler) AddTeamAgent(c echo.Context) error {
+	teamID := c.Param("id")
+	agentID := c.Param("agent_id")
+	if teamID == "" || agentID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "team id and agent id are required"})
+	}
+
+	_, err := h.DB.Exec(c.Request().Context(), `
+		INSERT INTO team_agents (team_id, agent_id)
+		VALUES ($1, $2)
+		ON CONFLICT DO NOTHING
+	`, teamID, agentID)
+	if err != nil {
+		c.Logger().Errorf("failed to add team agent: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to add team agent"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{"message": "agent added to team"})
+}
+
+func (h *Handler) RemoveTeamAgent(c echo.Context) error {
+	teamID := c.Param("id")
+	agentID := c.Param("agent_id")
+	if teamID == "" || agentID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "team id and agent id are required"})
+	}
+
+	ctx := c.Request().Context()
+	tx, err := h.DB.Begin(ctx)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "cannot start transaction"})
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, "DELETE FROM agent_relations WHERE team_id = $1 AND (source_id = $2 OR target_id = $2)", teamID, agentID); err != nil {
+		c.Logger().Errorf("failed to remove team agent relations: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to remove team agent relations"})
+	}
+
+	res, err := tx.Exec(ctx, "DELETE FROM team_agents WHERE team_id = $1 AND agent_id = $2", teamID, agentID)
+	if err != nil {
+		c.Logger().Errorf("failed to remove team agent: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to remove team agent"})
+	}
+	if res.RowsAffected() == 0 {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "team agent not found"})
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "transaction commit failed"})
+	}
+
+	return c.NoContent(http.StatusNoContent)
 }
 
 func (h *Handler) UpdateTeam(c echo.Context) error {
@@ -528,7 +618,6 @@ func (h *Handler) GetThreads(c echo.Context) error {
 	return c.JSON(http.StatusOK, threads)
 }
 
-
 func (h *Handler) GetThreadTasks(c echo.Context) error {
 	threadID := c.Param("id")
 	if threadID == "" {
@@ -580,7 +669,7 @@ func (h *Handler) DeleteThread(c echo.Context) error {
 	}
 
 	ctx := c.Request().Context()
-	
+
 	// CASCADE is set on tasks, threads (parent_thread_id), and logs.
 	// Deleting the thread will automatically delete all associated data.
 	res, err := h.DB.Exec(ctx, "DELETE FROM threads WHERE id = $1", threadID)
@@ -708,7 +797,12 @@ func (h *Handler) GetTeamBlueprint(c echo.Context) error {
 	teamID := c.Param("id")
 
 	// 1. Fetch all members of the team
-	rows, err := h.DB.Query(ctx, "SELECT id, name, role, mission, status, team_id, ui_pos_x, ui_pos_y, created_at, updated_at, tools, capabilities FROM agents WHERE team_id = $1", teamID)
+	rows, err := h.DB.Query(ctx, `
+		SELECT a.id, a.name, a.role, a.mission, a.status, a.team_id, a.ui_pos_x, a.ui_pos_y, a.created_at, a.updated_at, a.tools, a.capabilities
+		FROM agents a
+		INNER JOIN team_agents ta ON ta.agent_id = a.id
+		WHERE ta.team_id = $1
+	`, teamID)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to fetch team members"})
 	}
@@ -786,7 +880,10 @@ func (h *Handler) CreateRelation(c echo.Context) error {
 
 	// Application-level validation: Source and Target must belong to the same team
 	var sameTeam bool
-	err := h.DB.QueryRow(ctx, "SELECT (SELECT team_id FROM agents WHERE id = $1) = (SELECT team_id FROM agents WHERE id = $2)", req.SourceID, req.TargetID).Scan(&sameTeam)
+	err := h.DB.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM team_agents WHERE team_id = $1 AND agent_id = $2)
+			AND EXISTS(SELECT 1 FROM team_agents WHERE team_id = $1 AND agent_id = $3)
+	`, req.TeamID, req.SourceID, req.TargetID).Scan(&sameTeam)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to validate team membership"})
 	}

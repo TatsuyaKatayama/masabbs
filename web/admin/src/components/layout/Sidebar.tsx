@@ -21,6 +21,7 @@ const navigation = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const settingsActive = pathname === '/settings';
 
   return (
     <div className="flex h-full w-64 flex-col bg-slate-900 text-white">
@@ -53,9 +54,13 @@ export default function Sidebar() {
       <div className="border-t border-slate-800 p-4">
         <Link
           href="/settings"
-          className="flex items-center rounded-md px-3 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
+          className={`flex items-center rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+            settingsActive
+              ? 'bg-slate-800 text-indigo-400'
+              : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+          }`}
         >
-          <Settings className="mr-3 h-5 w-5 text-slate-400" />
+          <Settings className={`mr-3 h-5 w-5 ${settingsActive ? 'text-indigo-400' : 'text-slate-400'}`} />
           Settings
         </Link>
       </div>

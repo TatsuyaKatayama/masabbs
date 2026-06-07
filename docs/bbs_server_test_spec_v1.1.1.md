@@ -1,327 +1,275 @@
-# Multi-Agent Message Board System — テスト仕様書 — v1.1.1
+# MASABBS Test Specification — 現行仕様
 
-> **改訂履歴**: v1.1.1 リリース。E2E署名検証の修正、CIキャッシュ競合の解消、およびスループットテストの安定性向上。
-
-本テスト仕様書は、マルチエージェント掲示板サーバーに対して、  
-**安全性・堅牢性・収束性・性能・可用性** を保証するための包括的なテスト体系を定義する。
-
-本システムは **LLM をクライアントとするため、入力は常に不正・逸脱し得る** という前提で設計される。  
-そのため、テストは以下の 4 層構造で実施する：
-
-- **単体テスト（Unit）**：厳密なバリデーション・認可・状態遷移の検証
-- **結合テスト（Integration）**：不安定な擬似クライアントを用いた耐性検証
-- **E2E テスト（End-to-End）**：正常・異常・攻撃シナリオでの収束性・安全性評価
-- **非機能テスト（性能・可用性・並行性・障害回復）**：サーバーとしての品質保証
+この文書は、現行 MASABBS の Go API / PostgreSQL / Admin UI / backup-restore 仕様に対するテスト方針を定義する。
 
 ---
 
-# 1. テスト対象範囲
+## 1. テスト対象
 
-## 対象コンポーネント
+### 対象コンポーネント
 
-- NATS JetStream（board.\\* streams）
-- Go API / WebSocket サーバー
-- PostgreSQL（threads / tasks / agents / relations）
-- MinIO（S3 互換ストレージ）
-- 認証（NATS JWT / NKey）
-- 管理画面 API（Next.js）
+- Go API
+- PostgreSQL schema / migrations
+- NATS / WebSocket 周辺
+- MinIO storage API wrapper
+- Next.js Admin UI
+- backup/restore API
 
-## テスト対象外（モック化）
+### 主要データ
 
-- 各エージェントの内部ロジック（LLM 部分）
-- 外部ネットワーク
-
-## テスト環境
-
-| 項目 | バージョン / 設定 |
-|------|------------------|
-| Go | 1.22 以上 |
-| Testcontainers-Go | v0.30 以上 |
-| NATS Server | 2.10 以上 |
-| PostgreSQL | 16 以上 |
-| MinIO | RELEASE.2024-01 以上 |
-| CI | GitHub Actions（PR ごとに全テスト実行） |
+- teams
+- agents
+- team_agents
+- agent_relations
+- threads
+- tasks
+- logs
+- configs
 
 ---
 
-# 2. 単体テスト（Unit Test）
+## 2. 現行の自動テスト
 
-単体テストは **「LLM が絶対に守らない前提」** で、  
-**サーバー側の防御・制御ロジックを厳密に検証する**。
+### Go
 
----
+実行コマンド:
 
-## 2.1 メッセージバリデーション
+```bash
+go test ./...
+```
 
-### 正常系
+一部テストは Testcontainers を使うため Docker が必要。
 
-| ID | テスト内容 | 期待結果 |
-|----|-----------|---------| 
-| UT-VAL-001 | 正しい JSON schema のメッセージを受信する | 受理（200 / ACK） |
-| UT-VAL-002 | thread_id が ULID 形式である | 受理 |
-| UT-VAL-003 | 必須フィールド（type / from / to / thread_id / payload）がすべて揃っている | 受理 |
+対象例:
 
-### 異常系（LLM がやりがちな誤り）
+- API handler
+- credential generation
+- team organization API
+- config preset save/load/delete
+- config restore replace
+- thread snapshot export/import replace
+- full snapshot export/import replace
+- DB schema
+- storage
+- integration / e2e
 
-| ID | テスト内容 | 期待結果 |
-|----|-----------|---------| 
-| UT-VAL-101 | `to` フィールドが欠落している | 400 / reject |
-| UT-VAL-102 | `payload` が null | 400 / reject |
-| UT-VAL-103 | `to` が配列ではなく単一文字列 | 400 / reject |
-| UT-VAL-104 | `timestamp` が数値ではなく文字列 | 400 / reject |
-| UT-VAL-105 | `type` が未定義の値 | 400 / reject |
-| UT-VAL-106 | `agent_id` が未登録 | 400 / reject |
-| UT-VAL-107 | `thread_id` が UUID 形式（ULID でない） | 400 / reject |
-| UT-VAL-108 | `thread_id` が数字のみ | 400 / reject |
-| UT-VAL-109 | `thread_id` が空文字 | 400 / reject |
-| UT-VAL-110 | payload が 10MB 超 | 413 / reject |
-| UT-VAL-111 | JSON でない文字列（LLM が壊した場合） | 400 / reject |
-| UT-VAL-112 | ULID が重複登録（同一 thread_id を 2 回 create） | 409 / reject |
+### Admin UI
 
----
+実行コマンド:
 
-## 2.2 認可（Authorization）
+```bash
+npm run lint
+npm run build
+```
 
-### 正常系
-
-| ID | テスト内容 | 期待結果 |
-|----|-----------|---------|
-| UT-AUTH-001 | manager が `assign` を publish できる | 受理 |
-| UT-AUTH-002 | worker が `result` を publish できる | 受理 |
-| UT-AUTH-003 | observer が subscribe のみ実行できる | 受理 |
-
-### 異常系
-
-| ID | テスト内容 | 期待結果 |
-|----|-----------|---------|
-| UT-AUTH-101 | worker が `assign` を publish する | 拒否（403） |
-| UT-AUTH-102 | observer が publish する | 拒否（403） |
-| UT-AUTH-103 | 未登録 agent_id で接続する | 接続拒否（401） |
-| UT-AUTH-104 | 一般エージェントが `shutdown` を publish する | 拒否（403） |
-| UT-AUTH-105 | 期限切れ JWT で接続する | 接続拒否（401） |
-| UT-AUTH-106 | 改ざんされた JWT（署名不一致）で接続する | 接続拒否（401） |
-| UT-AUTH-107 | リプレイ攻撃（使用済み JWT を再利用）を試みる | 接続拒否（401） |
-| UT-AUTH-108 | revoke 済み NKey で接続する | 接続拒否（401） |
-| UT-AUTH-109 | NATS subject にワイルドカード（`board.*.>`）を含む publish | 拒否（403） |
+Next build は Google Fonts 取得が必要になる場合がある。
 
 ---
 
-## 2.3 状態遷移（State Machine）
+## 3. API テスト項目
 
-### 正常系
+### 3.1 Health
 
-| ID | テスト内容 | 期待結果 |
-|----|-----------|---------|
-| UT-SM-001 | `open → assigned → processing → done` の順遷移 | 各状態に遷移成功 |
-| UT-SM-002 | `open → collecting → done` の順遷移 | 各状態に遷移成功 |
+| ID | 内容 | 期待結果 |
+|---|---|---|
+| API-HEALTH-001 | DB 接続が正常 | `200 {"status":"ok"}` |
+| API-HEALTH-002 | DB 接続不可 | `503` |
 
-### 異常系
+### 3.2 Agents
 
-| ID | テスト内容 | 期待結果 |
-|----|-----------|---------|
-| UT-SM-101 | `done → processing`（逆遷移） | 拒否・状態変化なし |
-| UT-SM-102 | `error → processing` | 拒否・状態変化なし |
-| UT-SM-103 | `assigned → open`（巻き戻し） | 拒否・状態変化なし |
-| UT-SM-104 | timeout 後に遅れて `result` が届く | 破棄・状態変化なし（thread は `error` のまま） |
+| ID | 内容 | 期待結果 |
+|---|---|---|
+| API-AGENT-001 | agent 登録 | `201` |
+| API-AGENT-002 | agent 登録時に team を要求しない | 無所属で作成 |
+| API-AGENT-003 | id/name/role 欠落 | `400` |
+| API-AGENT-004 | agent 更新 | `200` |
+| API-AGENT-005 | agent 削除 | 関連 relation/thread/task/log は cascade |
+| API-AGENT-006 | unknown agent credential 生成 | `404` |
 
----
+### 3.3 Teams / Memberships
 
-## 2.4 ストレージアクセス（MinIO）
+| ID | 内容 | 期待結果 |
+|---|---|---|
+| API-TEAM-001 | team 一覧取得 | `200 []` |
+| API-TEAM-002 | team 更新 | `200` |
+| API-TEAM-003 | team に agent を追加 | `team_agents` に insert |
+| API-TEAM-004 | 同じ agent を同じ team に再追加 | idempotent |
+| API-TEAM-005 | team から agent を除外 | `team_agents` から delete |
+| API-TEAM-006 | team から agent 除外時に同 team の relation も削除 | 整合性維持 |
+| API-TEAM-007 | team 所属 agent 一覧 | `team_agents` ベースで返す |
+| API-TEAM-008 | agent が複数 team に所属できる | 複数 `team_agents` が存在 |
 
-### 正常系
+### 3.4 Relations
 
-| ID | テスト内容 | 期待結果 |
-|----|-----------|---------|
-| UT-S3-001 | worker が自 thread の output に書ける | 書き込み成功 |
-| UT-S3-002 | observer が read できる | 読み取り成功 |
+| ID | 内容 | 期待結果 |
+|---|---|---|
+| API-REL-001 | 同一 team 所属 agent 間に boss relation 作成 | `201` |
+| API-REL-002 | 同一 team 所属 agent 間に coworker relation 作成 | `201` |
+| API-REL-003 | team 未所属 agent を含む relation 作成 | `400` |
+| API-REL-004 | relation 削除 | `204` |
+| API-REL-005 | team relation 一覧 | 指定 team の relation のみ返す |
 
-### 異常系
+### 3.5 Threads / Tasks
 
-| ID | テスト内容 | 期待結果 |
-|----|-----------|---------|
-| UT-S3-101 | worker が他 thread の output に書く | 拒否（403） |
-| UT-S3-102 | observer が write する | 拒否（403） |
-| UT-S3-103 | path traversal（`../../etc/passwd`）を含む prefix | 拒否（400） |
-
----
-
-## 2.5 データ整合性（PostgreSQL）
-
-| ID | テスト内容 | 期待結果 |
-|----|-----------|---------|
-| UT-DB-001 | thread が `done` になった時点で関連 task がすべて完了している | 整合性あり |
-| UT-DB-002 | thread は `done` だが task が未完了のまま残る異常状態 | 検出・エラーログ出力 |
-| UT-DB-003 | 同一 thread_id に対する同時 INSERT（競合） | 片方が 409 で拒否される |
-| UT-DB-004 | トランザクション失敗時にロールバックされる | DB 状態が変化しない |
-| UT-DB-005 | デッドロック発生時にリトライまたはエラーを返す | デッドロック解消・整合性維持 |
-
----
-
-# 3. 結合テスト（Integration Test）
-
-結合テストでは **「不安定な擬似クライアント」** を用いる。  
-これは LLM の挙動を模倣した **ランダム・破損・遅延・重複** を含むクライアントである。
-
----
-
-## 3.1 擬似クライアントの特性
-
-- ランダムにフィールドを壊す
-- 遅延応答（0〜5 秒）
-- 重複送信（同じ `result` を 3 回送る）
-- 無関係な `thread_id` を混ぜる
-- 大量の subscribe を行う
-- 意味不明な JSON を送る
+| ID | 内容 | 期待結果 |
+|---|---|---|
+| API-THREAD-001 | thread 作成 | `201` と thread id |
+| API-THREAD-002 | team_id 指定で thread 作成 | `threads.team_id` に保存 |
+| API-THREAD-003 | to/observers 指定 | `tasks.to_agents` / `tasks.observers` に保存 |
+| API-THREAD-004 | thread 一覧 | `updated_at desc` |
+| API-THREAD-005 | thread tasks 一覧 | created_at asc |
+| API-THREAD-006 | thread 削除 | tasks/logs が cascade |
+| API-TASK-001 | latest tasks 一覧 | 空の場合も `[]` |
 
 ---
 
-## 3.2 テストケース
+## 4. Backup / Restore テスト項目
 
-| ID | テスト内容 | 期待結果 |
-|----|-----------|---------|
-| IT-001 | 破損メッセージをサーバーが安全に破棄できるか | 破棄・他 thread への影響なし |
-| IT-002 | 重複メッセージを idempotent に処理できるか | 1 回のみ処理・副作用なし |
-| IT-003 | 遅延メッセージが state machine を壊さないか | 状態遷移は最初の受信時のみ適用 |
-| IT-004 | 大量 subscribe による負荷耐性 | サーバー継続稼働・エラーなし |
-| IT-005 | JetStream の ACK / retry が正しく動作するか | 未 ACK メッセージが再配信される |
-| IT-006 | WebSocket 接続断後に再接続した際、メッセージが消失・重複しないか | 再接続後にメッセージが正確に復元 |
-| IT-007 | Ping/Pong タイムアウト時に接続が適切に切断されるか | タイムアウト検知・切断・ログ記録 |
-| IT-008 | 同一 agent_id で複数 WebSocket 接続を試みた場合の扱い | 後続接続を拒否（409）・既存セッションは維持 |
+restore はすべて replace であり merge ではない。
 
----
+### 4.1 Config snapshot
 
-# 4. E2E テスト（End-to-End）
+対象:
 
-E2E では **正常・異常・攻撃シナリオ** を含めて  
-**収束性（タスクが完了に至るか）と安全性（壊れないか）** を評価する。
+- teams
+- agents
+- team_agents
+- agent_relations
 
----
+| ID | 内容 | 期待結果 |
+|---|---|---|
+| SNAP-CONFIG-001 | current config を preset 保存 | configs に JSON 保存 |
+| SNAP-CONFIG-002 | configs 一覧 | data を含まない metadata 一覧 |
+| SNAP-CONFIG-003 | preset load | config が replace される |
+| SNAP-CONFIG-004 | preset load 時に threads/tasks/logs が削除される | FK 整合性維持 |
+| SNAP-CONFIG-005 | config export | teams/agents/team_agents/relations を含む |
+| SNAP-CONFIG-006 | config import | transaction 内で replace |
+| SNAP-CONFIG-007 | 旧 snapshot に team_agents が無い | agents.team_id から membership 補完 |
 
-## 4.1 正常シナリオ
+### 4.2 Thread snapshot
 
-| ID | テスト内容 | 期待結果 |
-|----|-----------|---------|
-| E2E-NORMAL-001 | a → b の 1 対 1 タスク | thread が `done` に収束 |
-| E2E-NORMAL-002 | a → b, c, d のブロードキャスト | すべての thread が `done` に収束 |
-| E2E-NORMAL-003 | b, c, d の結果を a が集約する | 集約結果が正しく記録される |
-| E2E-NORMAL-004 | observer がメッセージを受信できる | observer が購読メッセージを受信 |
+対象:
 
----
+- threads
+- tasks
+- logs
 
-## 4.2 異常シナリオ
+| ID | 内容 | 期待結果 |
+|---|---|---|
+| SNAP-THREAD-001 | thread export | threads/tasks/logs を含む |
+| SNAP-THREAD-002 | tasks の to_agents/observers を export | 欠落しない |
+| SNAP-THREAD-003 | thread import | 既存 threads/tasks/logs を replace |
+| SNAP-THREAD-004 | parent_thread_id あり | parent を復元 |
+| SNAP-THREAD-005 | matching agent/team 不在 | FK エラーで rollback |
+| SNAP-THREAD-006 | logs.id 復元後の sequence | 次回 insert が衝突しない |
 
-| ID | テスト内容 | 期待結果 |
-|----|-----------|---------|
-| E2E-ERR-001 | b が途中で沈黙（応答なし） | thread が `error` に収束・他 thread 影響なし |
-| E2E-ERR-002 | b が異常 JSON を返す | thread が `error` に収束・サーバークラッシュなし |
-| E2E-ERR-003 | b が異なる `thread_id` を返す | メッセージ破棄・元 thread は影響なし |
-| E2E-ERR-004 | b が `result` を 10 回送る | 最初の 1 回のみ処理・以降は idempotent に破棄 |
-| E2E-ERR-005 | a が `assign` を 2 回送る | 2 回目は拒否・thread 状態変化なし |
-| E2E-ERR-006 | timeout 後に遅れて `result` が届く | 破棄・thread は `error` のまま |
-| E2E-ERR-007 | 循環依存（a→b→c→a）が発生した場合の無限ループ検知 | ループ検知・thread を `error` に遷移・停止 |
+### 4.3 Full snapshot
 
----
+対象:
 
-## 4.3 攻撃シナリオ（LLM が暴走した場合）
+- configs
+- teams
+- agents
+- team_agents
+- agent_relations
+- threads
+- tasks
+- logs
 
-| ID | テスト内容 | 対応仕様 | 期待結果 |
-|----|-----------|---------|---------|
-| E2E-ATK-001 | 無限ループ状態で大量メッセージを送り続ける | §5.5 通常上限（60 msg/分） | 60 msg/分 超過で rate limit 発動・10秒ブロック・他エージェントは正常動作 |
-| E2E-ATK-002 | 1 秒間に 1000 回 publish する | §5.5 厳格モード（5 msg/秒） | 5 msg/秒 連続超過を検知・10秒ブロック・サーバーは拒否し続ける |
-| E2E-ATK-003 | 100MB の巨大 payload を送る | — | 413 で拒否・サーバーはクラッシュしない |
-| E2E-ATK-004 | 他エージェントの `agent_id` を偽装して publish する | — | 認証エラー（401 / 403）・偽装メッセージは拒否 |
-| E2E-ATK-005 | `shutdown` コマンドを一般エージェントが偽装送信する | — | 拒否（403）・システムは停止しない |
-| E2E-ATK-006 | 瞬間的に 20 msg/秒を超えるバーストを発生させる | §5.5 バースト許容（最大 20 msg/秒） | 20 msg/秒 以内のバーストは通過・超過分のみ破棄・サーバーは継続稼働 |
-
-> **補足（UT-AUTH-103 と E2E-ATK-004 の違い）**  
-> `UT-AUTH-103` は「未登録 agent_id」による接続拒否を単体で検証する。  
-> `E2E-ATK-004` は「登録済みエージェントが他者の agent_id を騙る」シナリオを E2E 環境で検証する。意図が異なるため両方維持する。
-
----
-
-# 5. 非機能テスト
-
-## 5.1 性能（Performance）
-
-| ID | テスト内容 | 合否基準 |
-|----|-----------|---------|
-| NFT-PERF-001 | 1 秒間に 1000 メッセージ publish 時の遅延測定 | p99 レイテンシ ≤ 200ms・エラー率 ≤ 0.1% |
-| NFT-PERF-002 | 1000 thread 同時進行時の CPU 使用率 | CPU ≤ 80%・メモリリークなし |
-| NFT-PERF-003 | MinIO への read/write スループット | read ≥ 500MB/s・write ≥ 200MB/s（環境依存のため目安） |
-
-## 5.2 可用性（Availability）
-
-| ID | テスト内容 | 合否基準 |
-|----|-----------|---------|
-| NFT-AVAIL-001 | NATS 再起動時に自動再接続する | 60 秒以内に再接続・メッセージ損失なし |
-| NFT-AVAIL-002 | PostgreSQL 再起動時にリトライする | リトライ成功・データ整合性維持 |
-| NFT-AVAIL-003 | MinIO 再起動時にリトライする | リトライ成功・ファイル損失なし |
-
-## 5.3 並行性（Concurrency）
-
-| ID | テスト内容 | 合否基準 |
-|----|-----------|---------|
-| NFT-CONC-001 | 100 エージェント同時接続 | 全接続成功・デッドロックなし |
-| NFT-CONC-002 | 100 thread が同時に `collecting` 状態 | 全 thread が正しく収束 |
-
-## 5.4 障害回復（Recovery）
-
-| ID | テスト内容 | 合否基準 |
-|----|-----------|---------|
-| NFT-REC-001 | JetStream の replay で中断前の状態が正しく復元される | 状態・メッセージが完全復元 |
-| NFT-REC-002 | thread の途中状態からの復旧 | 再起動後に処理が再開される |
-| NFT-REC-003 | `result` が途中で消失した場合の挙動 | JetStream retry により再配信・二重処理なし |
+| ID | 内容 | 期待結果 |
+|---|---|---|
+| SNAP-FULL-001 | full export | 全対象テーブルを含む |
+| SNAP-FULL-002 | full import | 全対象テーブルが replace |
+| SNAP-FULL-003 | import 中に FK エラー | rollback |
+| SNAP-FULL-004 | saved configs も復元 | configs が replace |
+| SNAP-FULL-005 | export JSON で active state が configs より前に出る | 手編集時に `configs[].data` と誤認しにくい |
+| SNAP-FULL-006 | top-level agents の mission/name/role/status を編集して import | active agents に反映 |
 
 ---
 
-# 6. テスト自動化
+## 5. Admin UI テスト項目
 
-## 推奨構成
+### 5.1 Agents page
 
-- Go + Testcontainers-Go（NATS / PostgreSQL / MinIO）
-- 擬似クライアント（Go または Python）
-- GitHub Actions / CI で PR ごとに自動実行
+| ID | 内容 | 期待結果 |
+|---|---|---|
+| UI-AGENTS-001 | agent 一覧表示 | `/api/v1/agents` の内容を表示 |
+| UI-AGENTS-002 | agent 登録フォーム | team 選択欄が無い |
+| UI-AGENTS-003 | agent 詳細編集 | PATCH が成功 |
+| UI-AGENTS-004 | agent 削除 | confirm 後 DELETE |
 
-## 自動化カバレッジ目標
+### 5.2 Org Tree
 
-| テスト種別 | 自動化率 | 実行タイミング |
-|-----------|---------|--------------|
-| 単体テスト | 100% | PR ごと |
-| 結合テスト | 80% | PR ごと |
-| E2E テスト | シナリオベースで自動化 | PR ごと |
-| 非機能テスト | 定期実行 | 週次（性能・障害回復） |
+| ID | 内容 | 期待結果 |
+|---|---|---|
+| UI-ORG-001 | team 切り替え | graph が指定 team で更新 |
+| UI-ORG-002 | agent を team に追加 | membership API を呼ぶ |
+| UI-ORG-003 | agent を team から除外 | confirm 後、relation も削除 |
+| UI-ORG-004 | relation 作成 | 同一 team 所属 agent 間のみ成功 |
+| UI-ORG-005 | backup panel が表示されない | graph 領域を圧迫しない |
+
+### 5.3 Message Board
+
+| ID | 内容 | 期待結果 |
+|---|---|---|
+| UI-BOARD-001 | team 切り替え | 指定 team の thread/message のみ表示 |
+| UI-BOARD-002 | task post 時に team_id を送る | selected team が thread に紐付く |
+| UI-BOARD-003 | thread 削除 | confirm 後 DELETE |
+| UI-BOARD-004 | backup panel が表示されない | board 領域を圧迫しない |
+
+### 5.4 Settings
+
+| ID | 内容 | 期待結果 |
+|---|---|---|
+| UI-SETTINGS-001 | `/settings` が表示される | 404 にならない |
+| UI-SETTINGS-002 | config backup/restore が表示される | Export/Restore 操作可能 |
+| UI-SETTINGS-003 | thread backup/restore が表示される | Export/Restore 操作可能 |
+| UI-SETTINGS-004 | full backup/restore が表示される | Export/Restore 操作可能 |
+| UI-SETTINGS-005 | destructive restore | confirm が表示される |
+| UI-SETTINGS-006 | saved presets | save/load/delete 操作可能 |
 
 ---
 
-# 7. テスト ID 体系
+## 6. DB / Migration テスト項目
 
-| プレフィックス | 対象 |
-|--------------|------|
-| `UT-VAL-xxx` | 単体：メッセージバリデーション |
-| `UT-AUTH-xxx` | 単体：認可・認証 |
-| `UT-SM-xxx` | 単体：状態遷移 |
-| `UT-S3-xxx` | 単体：ストレージアクセス |
-| `UT-DB-xxx` | 単体：データ整合性 |
-| `IT-xxx` | 結合テスト |
-| `E2E-NORMAL-xxx` | E2E：正常シナリオ |
-| `E2E-ERR-xxx` | E2E：異常シナリオ |
-| `E2E-ATK-xxx` | E2E：攻撃シナリオ |
-| `NFT-PERF-xxx` | 非機能：性能 |
-| `NFT-AVAIL-xxx` | 非機能：可用性 |
-| `NFT-CONC-xxx` | 非機能：並行性 |
-| `NFT-REC-xxx` | 非機能：障害回復 |
+| ID | 内容 | 期待結果 |
+|---|---|---|
+| DB-SCHEMA-001 | schema.sql 初期化 | 全テーブル作成 |
+| DB-SCHEMA-002 | team_agents PK | 同一 team/agent の重複不可 |
+| DB-SCHEMA-003 | team delete | team_agents / relations cascade |
+| DB-SCHEMA-004 | agent delete | team_agents / relations / threads / tasks / logs cascade |
+| DB-SCHEMA-005 | thread delete | child threads / tasks / logs cascade |
+| DB-MIG-001 | `20260607_add_team_agents.sql` 適用 | table/index 作成 |
+| DB-MIG-002 | 既存 agents.team_id から team_agents へ同期 | membership 補完 |
 
 ---
 
-# 8. まとめ
+## 7. 非機能テスト
 
-本テスト仕様書は **「LLM が常に不正入力を送る可能性がある」** という前提で設計されている。
+| ID | 内容 | 合否基準 |
+|---|---|---|
+| NFT-BUILD-001 | Admin UI build | `npm run build` 成功 |
+| NFT-LINT-001 | Admin UI lint | `npm run lint` 成功 |
+| NFT-GO-001 | Go 全体テスト | `go test ./...` 成功 |
+| NFT-RESTORE-001 | full restore 失敗時 | DB 変更が rollback |
+| NFT-WS-001 | WebSocket 再接続 | UI 初期 fetch と WS update で状態復元 |
 
-| テスト種別 | 主な目的 | 追加・強化ポイント |
-|-----------|---------|-----------------|
-| 単体 | 防御ロジックの厳密検証 | JWT/NKey 認証・DB 整合性・ULID 重複を追加 |
-| 結合 | 不安定クライアントへの耐性 | WebSocket 再接続・後続接続拒否（409）を追加 |
-| E2E | 収束性・安全性 | 循環依存検知・timeout 後の遅延応答（error 収束）・バースト上限テスト（E2E-ATK-006）を追加 |
-| 非機能 | 性能・可用性・並行性・障害回復 | 各テストに明示的な合否基準・rate limit 閾値を追加 |
+---
 
-これにより、**マルチエージェント掲示板サーバーが壊れず、暴走せず、確実に収束する** ことを保証する。
+## 8. CI 注意点
+
+- Go API tests は Testcontainers を使うため Docker が必要
+- Next build は Google Fonts 取得で network が必要になる場合がある
+- `npm run build` 成功時、`/settings` route が生成されることを確認する
+
+---
+
+## 9. 現行品質基準
+
+- agent 登録と team 所属が分離されていること
+- agent が複数 team に所属できること
+- Org Tree が team 構成の唯一の UI であること
+- Message Board が team を指定して thread 作成できること
+- backup/restore は Settings に集約されていること
+- config / threads / full restore が replace であること
+- thread backup が messages/tasks/logs を欠落なく含むこと

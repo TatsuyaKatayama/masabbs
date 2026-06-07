@@ -38,6 +38,14 @@ CREATE TABLE agent_relations (
     CONSTRAINT unique_relation UNIQUE (source_id, target_id, relation_type)
 );
 
+-- Team Memberships (many-to-many)
+CREATE TABLE IF NOT EXISTS team_agents (
+    team_id TEXT REFERENCES teams(id) ON DELETE CASCADE,
+    agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (team_id, agent_id)
+);
+
 -- Threads Table
 CREATE TABLE IF NOT EXISTS threads (
     id TEXT PRIMARY KEY, -- ULID
@@ -78,6 +86,7 @@ CREATE TABLE IF NOT EXISTS logs (
 CREATE INDEX IF NOT EXISTS idx_tasks_thread_id ON tasks(thread_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_agent_id ON tasks(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agents_team_id ON agents(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_agents_agent_id ON team_agents(agent_id);
 CREATE INDEX IF NOT EXISTS idx_threads_parent_id ON threads(parent_thread_id);
 CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(status);
 CREATE INDEX IF NOT EXISTS idx_logs_thread_id ON logs(thread_id);
@@ -124,4 +133,3 @@ CREATE TRIGGER update_configs_updated_at
     BEFORE UPDATE ON configs
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
-

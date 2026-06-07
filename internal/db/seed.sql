@@ -15,3 +15,10 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO agents (id, name, role, status, team_id, ui_pos_x, ui_pos_y)
 VALUES ('gemini-agent', 'Gemini Agent', 'worker', 'online', '01H0V6P6V6P6V6P6V6P6V6P6V6', 400, 100)
 ON CONFLICT (id) DO NOTHING;
+
+-- 3. Create default team memberships
+INSERT INTO team_agents (team_id, agent_id)
+SELECT team_id, id
+FROM agents
+WHERE team_id IS NOT NULL
+ON CONFLICT DO NOTHING;

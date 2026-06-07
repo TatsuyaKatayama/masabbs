@@ -1,456 +1,450 @@
-# Multi-Agent Message Board System — Server-side Specification & Architecture — v1.1.1
+# MASABBS Server Specification — 現行仕様
 
-> **改訂履歴**: v1.1.1 リリース。GetTasksが空件時にnullではなく空配列を返すように修正。署名検証の安定化。
-
-この文書は、**自律分散型マルチエージェントシステムのための「掲示板サーバー」**の仕様書です。  
-サーバーは判断せず、エージェントが疎結合に協調できる「場」を提供することに徹します。
+> 旧 v1.1.1 仕様を、現在の実装に合わせて更新した版。  
+> 現行実装は Go API / NATS JetStream / PostgreSQL / MinIO / Next.js Admin UI で構成される。
 
 ---
 
-# 1. サーバーの役割と思想
+## 1. 基本方針
 
-## サーバーの思想
-- サーバーは **判断しない・割り当てない・スケジュールしない**  
-- エージェントは **NATS を通じて協調**  
-- サーバーは以下の4つに責務を限定する  
+MASABBS は、自律エージェントが疎結合に協調するための message board server である。
 
-## サーバーの責務
-1. **掲示板（Message Board）**  
-2. **メッセージ配信（NATS / WebSocket）**  
-3. **組織・エージェント管理（PostgreSQL）**  
-4. **管理画面 API（Next.js）**  
+- サーバーはタスク内容を判断しない
+- エージェント間の通信は NATS JetStream を中心にする
+- Admin UI は状態確認、組織編集、手動タスク投入、backup/restore を担当する
+- PostgreSQL は thread / task / log / agent / team / relation / snapshot の永続化を担当する
+- MinIO は thread ごとの input / output / logs / meta のファイル領域を担当する
 
 ---
 
-# 2. 通信プロトコル
+## 2. アーキテクチャ
 
-## 外部通信（管理画面）
-- HTTPS（REST）
-- WSS（WebSocket over TLS）
-
-## 内部通信（エージェント）
-- **NATS JetStream（TCP）**
-  - エージェントは WebSocket を使わない
-  - NATS のみで publish/subscribe
-
-## WebSocket 多重接続ルール（管理画面用）
-- 同一 `agent_id` からの WebSocket 接続は **1 本のみ許可**
-- 既存セッションが存在する状態で再接続を試みた場合、**後続接続を拒否（409）**
-- 既存セッションはそのまま維持する
-
-## SSH は使用しない
-- 常時接続用途に不向き
-- Docker での SSH はアンチパターン
-
----
-
-# 3. 採用技術
-- Go（API / WebSocket）
-- NATS JetStream（メッセージ基盤）
-- PostgreSQL（状態管理）
-- MinIO（S3互換）
-- Next.js（管理画面）
-- Grafana Stack（監視）
-- Docker Compose
-
----
-
-# 4. 内部アーキテクチャ
-
-```
-                +---------------------------+
-                |       Admin UI (Next.js) |
-                |  - Agents View           |
-                |  - Org Tree              |
-                |  - Message Board         |
-                |  - Operations            |
-                +------------+-------------+
-                             |
-                             | HTTPS / WSS
-                             v
-+----------------------------+----------------------------+
-|           Nginx Reverse Proxy (Port 80)                |
-|  - /      -> Admin UI                                  |
-|  - /api/  -> Go API                                    |
-|  - /ws    -> WebSocket Hub                             |
-+----------------------------+----------------------------+
-                             |
-+----------------------------+----------------------------+
-|           Go API / WebSocket Server (Internal)         |
-|  - REST API (HTTPS)                                    |
-|  - WebSocket Hub (WSS)  <- Admin UI 専用               |
-|  - NATS Client (publish/subscribe)                     |
-|  - PostgreSQL ORM                                      |
-|  - MinIO Client (S3 API / presigned URL)               |
-+-----------+----------------------+----------------------+
-            |                      |
-            | NATS (TCP)           | SQL
-            v                      v
-+-----------+-----------+   +------+---------------------+
-|      NATS JetStream   |   |        PostgreSQL         |
-|  - board.tasks        |   |  - agents                 |
-|  - board.status       |   |  - teams                  |
-|  - board.shutdown.*   |   |  - agent_relations        |
-|  - board.events       |   |  - threads                |
-+-----------------------+   |  - tasks                  |
-                            |  - logs                   |
-                            +------+---------------------+
-                                   |
-                                   | S3 API
-                                   v
-                            +------+---------------------+
-                            |          MinIO            |
-                            |  - /tasks/...             |
-                            |  - /agents/...            |
-                            |  - /shared/...            |
-                            +---------------------------+
-
-            ^ NATS (TCP)
-            |
-+-----------+-----------+
-|         Agents        |
-|  - NATS Client        |
-|  - S3 SDK             |
-|  - tools API          |
-+-----------------------+
+```text
+Admin UI (Next.js)
+  - Agents
+  - Org Tree
+  - Overview
+  - Message Board
+  - Operations
+  - Settings
+        |
+        | HTTP / WebSocket
+        v
+Go API / WebSocket Server
+  - REST API
+  - WebSocket Hub
+  - NATS Client
+  - PostgreSQL access
+  - MinIO access
+        |
+        +--> NATS JetStream
+        |
+        +--> PostgreSQL
+        |      - teams
+        |      - agents
+        |      - team_agents
+        |      - agent_relations
+        |      - threads
+        |      - tasks
+        |      - logs
+        |      - configs
+        |
+        +--> MinIO
+               - tasks/{thread_id}/input/
+               - tasks/{thread_id}/output/
+               - tasks/{thread_id}/logs/
 ```
 
 ---
 
-# 5. 掲示板（Message Board）設計
+## 3. PostgreSQL データモデル
 
-## NATS ストリーム
-- board.tasks
-- board.status
-- board.events
-- board.shutdown.{agent_id}  ← 誤爆防止のため個別化
+### 3.1 teams
 
-## NATS ストリーム設定（補足）
+```sql
+teams (
+  id          text primary key,
+  name        text not null,
+  description text,
+  mission     text default '',
+  created_at  timestamptz default current_timestamp,
+  updated_at  timestamptz default current_timestamp
+)
+```
 
-| ストリーム | Retention | MaxAge | Replicas | 用途 |
-|---|---|---|---|---|
-| board.tasks | limits | 7日 | 1（開発）/ 3（本番） | タスク全ライフサイクル |
-| board.status | limits | 1日 | 1 | 状態更新（高頻度） |
-| board.events | limits | 3日 | 1 | 汎用イベント |
-| board.shutdown.* | workqueue | 1日 | 1 | 終了命令（1回消費） |
+### 3.2 agents
 
-> **補足：** `board.shutdown.*` は WorkQueue Retention を推奨。消費後に自動削除されるため、リプレイによる二重終了を防ぐ。
+```sql
+agents (
+  id           text primary key,
+  name         text not null,
+  role         text not null,
+  mission      text default '',
+  tools        jsonb default '[]',
+  capabilities jsonb default '[]',
+  status       text default 'offline',
+  team_id      text references teams(id), -- 互換用。新規の所属管理は team_agents を使う
+  ui_pos_x     float default 0,
+  ui_pos_y     float default 0,
+  created_at   timestamptz default current_timestamp,
+  updated_at   timestamptz default current_timestamp
+)
+```
 
-## メッセージ共通フィールド
+`POST /agents` による agent 登録時は team を指定しない。所属は Org Tree で `team_agents` に追加する。
+
+### 3.3 team_agents
+
+agent は複数 team に所属できる。現在のチーム所属の正規モデルは `team_agents` である。
+
+```sql
+team_agents (
+  team_id    text references teams(id) on delete cascade,
+  agent_id   text references agents(id) on delete cascade,
+  created_at timestamptz default current_timestamp,
+  primary key (team_id, agent_id)
+)
+```
+
+### 3.4 agent_relations
+
+team 内の agent 関係を表す。
+
+```sql
+agent_relations (
+  id                text primary key,
+  team_id           text references teams(id) on delete cascade,
+  source_id         text references agents(id) on delete cascade,
+  target_id         text references agents(id) on delete cascade,
+  source_handle     text,
+  target_handle     text,
+  relation_type     text not null, -- boss / coworker
+  relation_category text not null, -- vertical / horizontal
+  unique (source_id, target_id, relation_type)
+)
+```
+
+relation 作成時は、`source_id` と `target_id` が指定 `team_id` の `team_agents` に存在する必要がある。
+
+### 3.5 threads
+
+```sql
+threads (
+  id                text primary key,
+  parent_thread_id  text references threads(id) on delete cascade,
+  created_by_agent  text references agents(id) on delete cascade,
+  assigned_agent    text references agents(id) on delete set null,
+  status            text not null default 'open',
+  team_id           text references teams(id) on delete set null,
+  created_at        timestamptz default current_timestamp,
+  updated_at        timestamptz default current_timestamp
+)
+```
+
+Message Board では選択中 team を指定して thread を作成できる。
+
+### 3.6 tasks
+
+```sql
+tasks (
+  id         text primary key,
+  thread_id  text references threads(id) on delete cascade,
+  agent_id   text references agents(id) on delete cascade,
+  type       text not null,
+  to_agents  text[],
+  observers  text[],
+  payload    jsonb not null,
+  created_at timestamptz default current_timestamp
+)
+```
+
+`tasks` はメッセージ履歴として保存される。`to_agents` と `observers` も backup/restore 対象である。
+
+### 3.7 logs
+
+```sql
+logs (
+  id         bigserial primary key,
+  thread_id  text references threads(id) on delete cascade,
+  agent_id   text references agents(id) on delete cascade,
+  level      text not null,
+  message    text not null,
+  created_at timestamptz default current_timestamp
+)
+```
+
+### 3.8 configs
+
+保存済み config preset。
+
+```sql
+configs (
+  id          text primary key,
+  name        text not null unique,
+  description text,
+  data        jsonb not null,
+  created_at  timestamptz default current_timestamp,
+  updated_at  timestamptz default current_timestamp
+)
+```
+
+`data` は teams / agents / team_agents / agent_relations を含む `ConfigurationSnapshot` である。
+
+---
+
+## 4. REST API
+
+全 API は `/api/v1` 配下。
+
+### 4.1 Health
+
+| Method | Path | 説明 |
+|---|---|---|
+| GET | `/health` | DB 接続を確認する |
+
+### 4.2 Threads / Tasks
+
+| Method | Path | 説明 |
+|---|---|---|
+| POST | `/threads` | thread を作成し、task message を保存・publish する |
+| GET | `/threads` | thread 一覧 |
+| GET | `/threads/:id/tasks` | thread の task/message 一覧 |
+| DELETE | `/threads/:id` | thread と関連 tasks/logs を削除 |
+| GET | `/tasks` | 最新 task/message 一覧 |
+
+`POST /threads` request:
 
 ```json
 {
-  "type": "task | offer | assign | result | status | event | shutdown",
-  "thread_id": "ULID",
-  "from": "agent:a",
-  "to": ["agent:b"],
-  "observers": ["agent:c"],
+  "thread_id": "optional-existing-thread-id",
+  "command": "task instruction",
+  "created_by_agent": "admin-ui",
+  "to": ["agent-1"],
+  "observers": ["agent-2"],
+  "parent_thread_id": "optional-parent-thread-id",
+  "deadline": "2026-06-07T12:00:00Z",
+  "team_id": "optional-team-id"
+}
+```
+
+`thread_id` 未指定時はサーバーが ULID を発行する。
+
+### 4.3 Agents
+
+| Method | Path | 説明 |
+|---|---|---|
+| GET | `/agents` | agent 一覧 |
+| POST | `/agents` | agent 登録。team 所属は付与しない |
+| GET | `/agents/:id` | agent 詳細 |
+| PATCH | `/agents/:id` | agent 更新 |
+| DELETE | `/agents/:id` | agent 削除 |
+| POST | `/agents/:id/credentials` | NATS 認証情報生成 |
+| GET | `/agents/:id/network` | agent の隣接関係取得 |
+
+`POST /agents` request:
+
+```json
+{
+  "id": "agent-1",
+  "name": "Agent One",
+  "role": "worker",
+  "mission": "optional mission"
+}
+```
+
+### 4.4 Teams / Memberships / Relations
+
+| Method | Path | 説明 |
+|---|---|---|
+| GET | `/teams` | team 一覧 |
+| PATCH | `/teams/:id` | team mission などを更新 |
+| GET | `/teams/:id/agents` | team 所属 agent 一覧 |
+| POST | `/teams/:id/agents/:agent_id` | agent を team に追加 |
+| DELETE | `/teams/:id/agents/:agent_id` | agent を team から除外。同 team の relation も削除 |
+| GET | `/teams/:id/relations` | team 内 relation 一覧 |
+| POST | `/relations` | relation 作成 |
+| DELETE | `/relations/:id` | relation 削除 |
+| GET | `/teams/:id/blueprint` | team 構造の Mermaid blueprint |
+
+### 4.5 Storage
+
+| Method | Path | 説明 |
+|---|---|---|
+| GET | `/storage/files?prefix=...` | MinIO object 一覧 |
+| GET | `/storage/presign?key=...` | presigned URL 取得 |
+
+---
+
+## 5. Backup / Restore
+
+現行仕様では backup/restore は Settings 画面に集約されている。restore はすべて replace であり、merge ではない。
+
+### 5.1 Config preset
+
+対象:
+
+- `teams`
+- `agents`
+- `team_agents`
+- `agent_relations`
+
+API:
+
+| Method | Path | 説明 |
+|---|---|---|
+| GET | `/configs` | 保存済み config preset 一覧 |
+| POST | `/configs` | 現在の config を DB に保存 |
+| DELETE | `/configs/:id` | config preset 削除 |
+| POST | `/configs/:id/load` | 保存済み config を replace restore |
+| GET | `/configs/export` | 現在の config を JSON export |
+| POST | `/configs/import` | config JSON を replace restore |
+
+Config restore は thread history を削除する。これは agents/teams の replace により既存 thread の FK が壊れることを避けるためである。
+
+### 5.2 Thread backup
+
+対象:
+
+- `threads`
+- `tasks`
+- `logs`
+
+API:
+
+| Method | Path | 説明 |
+|---|---|---|
+| GET | `/threads/export` | threads/tasks/logs を JSON export |
+| POST | `/threads/import` | threads/tasks/logs を replace restore |
+
+Thread restore は matching teams/agents が存在する前提。存在しない場合は FK エラーになる。
+
+### 5.3 Full backup
+
+対象:
+
+- `teams`
+- `agents`
+- `team_agents`
+- `agent_relations`
+- `threads`
+- `tasks`
+- `logs`
+- `configs`
+
+`configs` は保存済み preset のバックアップであり、active state ではない。JSON export では active state の `teams` / `agents` / `team_agents` / `relations` を先に出し、`configs` は末尾に置く。
+
+API:
+
+| Method | Path | 説明 |
+|---|---|---|
+| GET | `/snapshot/export` | full snapshot を JSON export |
+| POST | `/snapshot/import` | full snapshot を replace restore |
+
+Full restore は transaction 内で実行し、失敗時は rollback する。
+
+---
+
+## 6. Admin UI
+
+### Agents
+
+- agent 登録
+- agent 一覧
+- agent 詳細編集
+- agent 削除
+- team 所属は扱わない
+
+### Org Tree
+
+- team 切り替え
+- team に agent を追加
+- team から agent を除外
+- relation 作成・削除
+- node 位置保存
+
+### Message Board
+
+- team 切り替え
+- 選択中 team の thread/message 表示
+- 選択中 team を指定した task post
+- thread 削除
+- thread history preview
+
+### Settings
+
+- config backup/restore
+- thread backup/restore
+- full backup/restore
+- saved config preset の save/load/delete
+
+---
+
+## 7. NATS / WebSocket
+
+### NATS subjects
+
+| Type | Subject |
+|---|---|
+| task | `board.task.<thread_id>` |
+| offer | `board.offer.<thread_id>` |
+| assign | `board.assign.<thread_id>` |
+| result | `board.result.<thread_id>` |
+| status | `board.status.<agent_id>` |
+| event | `board.event.<event_type>` |
+| shutdown | `board.shutdown.<agent_id>` |
+
+### Message envelope
+
+```json
+{
+  "id": "optional-message-id",
+  "type": "task",
+  "thread_id": "thread-id",
+  "from": "agent-id",
+  "to": ["agent-id"],
+  "observers": ["agent-id"],
   "timestamp": 1234567890,
   "payload": {}
 }
 ```
 
-> **注意（エージェント実装者向け）**: `thread_id` は必ず **ULID 形式**とし、サーバーが発行した値を使用すること。エージェントが独自に生成した UUID や任意文字列は拒否される（400）。  
-> `post_response()` スキルは `(output_dir, exit_code, message, error)` などの引数をとり、内部でこれらを `result` ペイロードとしてパブリッシュする。 `message` フィールドはテキストメッセージの返信に使用できる。
+### WebSocket
 
-## observers の扱い
-- observer は **subscribe-only**
-- publish 権限なし
-- NATS の権限グループとして定義
+WebSocket は Admin UI 用。接続時に最新 agents / threads / tasks を取得し、以降の message を UI に反映する。
 
 ---
 
-# 5.5 Rate Limit 設計
+## 8. MinIO
 
-## 設計方針
-- 利用想定：通常エージェントは **1分あたり最大10メッセージ** 程度の publish
-- 暴走エージェント（LLM ループ等）を検知・遮断するため、余裕を持たせた上限を設定する
-- 適用レイヤー：**NATS サーバーレベル**（per connection / per subject）
+thread 作成時に以下の prefix を作成する。
 
-## Rate Limit 設定値
+```text
+tasks/{thread_id}/input/
+tasks/{thread_id}/output/
+tasks/{thread_id}/logs/
+tasks/{thread_id}/meta.json
+```
 
-| 対象 | 上限 | ウィンドウ | バースト許容 | 超過時の挙動 |
-|------|------|-----------|------------|------------|
-| エージェント 1 接続あたりの publish | 60 msg | 1分 | 最大 20 msg/秒（瞬間） | 超過メッセージを破棄・警告ログ |
-| エージェント 1 接続あたりの publish（厳格モード） | 5 msg/秒 | 連続超過で遮断 | なし | 10秒間 publish ブロック |
-| 全体スループット（サーバー合計） | 10,000 msg/秒 | 1秒 | — | 超過分を NATS が内部キューで制御 |
-
-> **補足：** 通常利用（1分10投稿）に対して6倍の余裕を持たせた60msg/分を上限とする。  
-> 瞬間バーストは最大20msg/秒まで許容するが、5msg/秒を連続して超過した場合は暴走と判断し10秒間ブロックする。
+成果物は `result.payload.output_dir` を通じて Admin UI から参照できる。
 
 ---
 
-# 6. Thread / Task モデル（PostgreSQL）
+## 9. 移行方針
 
-## threads
-
-```sql
-threads (
-  id                text primary key,
-  parent_thread_id  text,
-  created_by_agent  text,
-  assigned_agent    text,
-  status            text,  -- open / assigned / collecting / processing / done / error
-  created_at        timestamptz,
-  updated_at        timestamptz
-)
-```
-
-## 状態遷移図
-
-```
-open --> assigned --> processing --> done
-  \                       |
-   --> collecting --> done  \--> error（リトライまたは終了）
-```
-
-## tasks / logs
-
-```sql
-tasks (
-  id          text primary key,
-  thread_id   text references threads(id),
-  agent_id    text,
-  type        text,   -- task / offer / assign / result / status / event
-  payload     jsonb,
-  created_at  timestamptz
-)
-
-logs (
-  id          bigserial primary key,
-  thread_id   text,
-  agent_id    text,
-  level       text,   -- info / warn / error
-  message     text,
-  created_at  timestamptz
-)
-```
+- `agents.team_id` は互換用に残す
+- 正規のチーム所属は `team_agents`
+- 既存 `agents.team_id` は migration で `team_agents` に同期する
+- snapshot import 時、`team_agents` が空で旧 snapshot に `agents.team_id` がある場合は membership を補完する
 
 ---
 
-# 7. 組織モデル（PostgreSQL）
+## 10. 現行仕様の要点
 
-## agents
-
-```sql
-agents (
-  id           text primary key,
-  name         text,
-  role         text,
-  tools        jsonb,
-  capabilities jsonb,
-  status       text,
-  team_id      text references teams(id)
-)
-```
-
-## teams
-
-```sql
-teams (
-  id          text primary key,
-  name        text,
-  description text
-)
-```
-
-## agent_relations
-
-```sql
-agent_relations (
-  parent_agent_id text references agents(id),
-  child_agent_id  text references agents(id),
-  relation_type   text,   -- "manages"
-  PRIMARY KEY (parent_agent_id, child_agent_id)
-)
-```
-
-> **補足：** agent_relations に複合主キーを設定し、同一ペアの重複登録を防ぐ。
-
-## tools API（エージェント用）
-- get_team_info
-- get_manager
-- get_workers
-- get_agent_profile
-
----
-
-# 8. エージェント認証（NATS JWT / NKey）
-
-## 認証と組織構成は別軸
-- 認証：NATS（接続時に JWT 検証）
-- 組織構成：PostgreSQL
-- 共通キー：agent_id（NATS JWT の subject と一致させる）
-
-## 権限モデル
-
-### manager
-```
-publish:   ["board.tasks", "board.assign"]
-subscribe: ["board.offer", "board.result", "board.status"]
-```
-
-### worker
-```
-publish:   ["board.offer", "board.result", "board.status"]
-subscribe: ["board.tasks", "board.assign"]
-```
-
-### observer
-```
-publish:   []
-subscribe: ["board.tasks", "board.result", "board.status"]
-```
-
-### shutdown（管理サーバーのみ）
-```
-publish:   ["board.shutdown.{agent_id}"]
-subscribe: ["board.shutdown.{self}"]
-```
-
-## JWT 発行フロー（補足）
-
-```
-管理者 / 管理画面
-  --> Go API: POST /agents/{id}/credentials
-  --> NATS Account Server に NKey + JWT 生成リクエスト
-  --> JWT をエージェントに安全に配布（起動時に環境変数 or Secret）
-```
-
-> **補足：** NATS の Operator / Account / User の3層モデルを使用する。エージェントは User レベルで発行される JWT で接続し、publish/subscribe 権限をロール別に制御する。
-
----
-
-# 9. 共有ファイルストレージ（MinIO / S3）
-
-## s3fs（FUSE）は禁止
-- Docker で --privileged が必要
-- セキュリティリスク
-- k8s 非推奨
-
-## エージェントは S3 SDK を使用
-- boto3 / aws-sdk / minio-go
-- read / write / list が可能
-- presigned URL も利用可能
-
----
-
-# 10. バケット構成とディレクトリルール
-
-## ディレクトリ構成
-
-```
-/tasks/
-    {thread_id}/
-        input/
-        output/
-        logs/
-        meta.json
-
-/agents/
-    {agent_id}/
-        workspace/
-        logs/
-        cache/
-
-/shared/
-    datasets/
-    models/
-    temp/
-```
-
-> **エージェントとの対応**:  
-> - `sync_from_s3(thread_id, "input/", ...)` → `/tasks/{thread_id}/input/` を取得  
-> - `sync_to_s3(thread_id, local_path)` → `/tasks/{thread_id}/output/` へ書き込み
-
-## ディレクトリ作成ルール
-1. サーバーが thread_id 発行時に作成
-2. エージェントは mkdir しない
-3. 書き込み先パスはメッセージで渡す
-4. 成果物は S3 パス or presigned URL で共有
-
----
-
-# 11. MinIO バケットポリシー
-
-## 動的ポリシー生成フロー（補足）
-
-```
-Go API: thread_id 発行
-  --> MinIO Admin API: /tasks/{thread_id}/ ディレクトリ作成
-  --> ポリシー生成（下記テンプレートに thread_id を埋め込む）
-  --> MinIO Admin API: ポリシーをエージェントの IAM ユーザーにアタッチ
-```
-
-> **補足：** Go サーバーが MinIO の管理 API（mc admin policy）を呼び出し、thread_id 発行と同時にポリシーを自動生成・アタッチする。これにより、エージェントは所定のパス以外への書き込みが物理的に禁止される。
-
-## worker の例
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": ["s3:PutObject", "s3:GetObject"],
-      "Resource": "arn:aws:s3:::ma-system/tasks/{thread_id}/output/*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": ["s3:GetObject"],
-      "Resource": "arn:aws:s3:::ma-system/tasks/{thread_id}/input/*"
-    }
-  ]
-}
-```
-
-## observer の例
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": ["s3:GetObject"],
-      "Resource": "arn:aws:s3:::ma-system/tasks/{thread_id}/*"
-    }
-  ]
-}
-```
-
-## 管理サーバー
-
-```
-Allow: ["s3:*"]
-```
-
----
-
-# 12. 開発順序
-
-1. **通信仕様**（NATS subject / JSON schema）
-2. **データモデル**（PostgreSQL）
-3. **NATS ストリーム設計**（Retention / ACK / Replay 設定）
-4. **MinIO Admin API 連携**：thread 発行フックでポリシー自動生成
-5. **Go API / WebSocket サーバー**
-6. **管理画面**（Next.js）
-7. **エージェント実装**（NATS + S3 SDK）
-
-> **補足：** 手順3と並行して、NATSにpublish/subscribeするだけのモックエージェント（スタブ）を作成する。これにより、APIや管理画面の結合テストを手順5以前から実施でき、手戻りを削減できる。
-
----
-
-# 13. 全体まとめ
-- エージェントは **NATS のみ**使用
-- WebSocket は UI 専用
-- 共有ファイルは **MinIO（S3）**、パス体系は `/tasks/{thread_id}/` に統一
-- s3fs は禁止、S3 SDK に統一
-- shutdown は **board.shutdown.{agent_id}**（WorkQueue Retention）
-- observer は **subscribe-only**
-- バケットポリシーは **thread_id × agent_id** で動的生成
-- agent_relations に **複合主キー**で重複防止
-- NATS 認証は **Operator / Account / User 3層モデル**
-- WebSocket 多重接続は **後続接続を拒否（409）**
-- Rate Limit は **60 msg/分（バースト：20 msg/秒）、連続超過時10秒ブロック**
-- `thread_id` は **ULID 形式**、サーバー発行値を使用しエージェントが独自生成してはならない
+- agent 登録時は free / 無所属
+- team 構成は Org Tree で行う
+- agent は複数 team に所属可能
+- Message Board では team を指定して thread を作成可能
+- backup/restore は Settings に集約
+- restore はすべて replace
+- full backup は messages/tasks/logs まで含む
+- full backup JSON を手編集する場合、active agent を変更するには top-level `agents` を編集する。`configs[].data.agents` は保存済み preset の中身であり、active state には直接反映されない

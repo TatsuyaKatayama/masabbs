@@ -229,7 +229,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 				var threadID *string
 				var toAgents, observers []string
 				var createdAt time.Time
-				
+
 				if err := rows.Scan(&taskID, &p, &msgType, &fromAgent, &threadID, &toAgents, &observers, &createdAt); err == nil {
 					// Re-construct the envelope for the UI
 					env := map[string]interface{}{

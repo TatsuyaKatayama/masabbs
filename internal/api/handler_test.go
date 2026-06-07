@@ -113,6 +113,8 @@ func TestTeamOrganizationAPI(t *testing.T) {
 	for _, id := range agents {
 		_, err = db.Exec(ctx, "INSERT INTO agents (id, name, role, team_id, ui_pos_x, ui_pos_y) VALUES ($1, $2, 'worker', 't-complex', 0, 0)", id, "Agent "+id)
 		require.NoError(t, err)
+		_, err = db.Exec(ctx, "INSERT INTO team_agents (team_id, agent_id) VALUES ('t-complex', $1)", id)
+		require.NoError(t, err)
 	}
 
 	// Setup Relations
