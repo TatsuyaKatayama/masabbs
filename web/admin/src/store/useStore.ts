@@ -5,9 +5,11 @@ interface AppState {
   agents: Agent[];
   threads: Thread[];
   messages: MessageEnvelope[];
+  selectedTeamId?: string;
   setAgents: (agents: Agent[]) => void;
   setThreads: (threads: Thread[]) => void;
   setMessages: (messages: MessageEnvelope[]) => void;
+  setSelectedTeamId: (teamId?: string) => void;
   addMessage: (message: MessageEnvelope) => void;
   updateAgent: (agent: Partial<Agent> & { id: string }) => void;
   updateThread: (thread: Partial<Thread> & { id: string }) => void;
@@ -17,8 +19,10 @@ export const useStore = create<AppState>((set) => ({
   agents: [],
   threads: [],
   messages: [],
+  selectedTeamId: undefined,
   setAgents: (agents) => set({ agents }),
   setThreads: (threads) => set({ threads }),
+  setSelectedTeamId: (selectedTeamId) => set({ selectedTeamId }),
   setMessages: (messages) => set((state) => {
     // Merge and de-duplicate by id
     const existingIds = new Set(state.messages.map(m => m.id).filter(Boolean));

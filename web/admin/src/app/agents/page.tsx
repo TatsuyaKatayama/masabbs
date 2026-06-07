@@ -1,48 +1,38 @@
 'use client';
 
 import { useStore } from '@/store/useStore';
-import { 
-  Users, 
-  Circle,
+import {
+	Users,
+	Circle,
   Plus,
   X,
   Shield,
   Target,
   Save,
   Info,
-  LayoutGrid,
-  Edit2
 } from 'lucide-react';
 import { useState, useEffect, useCallback } from 'react';
-import { Agent, Team } from '@/types';
+import { Agent } from '@/types';
 
 export default function AgentsPage() {
-  const agents = useStore((state) => state.agents);
-  const setAgents = useStore((state) => state.setAgents);
-  const [teams, setTeams] = useState<Team[]>([]);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+	const agents = useStore((state) => state.agents);
+	const setAgents = useStore((state) => state.setAgents);
+	const [isModalOpen, setIsModalOpen] = useState(false);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
-  const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
-  const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
 
   const [formData, setFormData] = useState({
-    id: '',
-    name: '',
-    role: 'worker',
-    mission: '',
-    team_id: '01H0V6P6V6P6V6P6V6P6V6P6V6' // Default Core Team
-  });
+		id: '',
+		name: '',
+		role: 'worker',
+		mission: '',
+	});
 
   const [detailFormData, setDetailFormData] = useState({
     name: '',
     role: 'worker',
-    mission: ''
-  });
-
-  const [teamFormData, setTeamFormData] = useState({
     mission: ''
   });
 
@@ -57,21 +47,9 @@ export default function AgentsPage() {
     }
   }, [setAgents]);
 
-  const refreshTeams = useCallback(async () => {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
-    try {
-      const res = await fetch(`${apiUrl}/api/v1/teams`);
-      const data = await res.json();
-      if (Array.isArray(data)) setTeams(data);
-    } catch (err) {
-      console.error('Failed to refresh teams:', err);
-    }
-  }, []);
-
-  useEffect(() => {
-    Promise.resolve().then(() => refreshAgents());
-    Promise.resolve().then(() => refreshTeams());
-  }, [refreshAgents, refreshTeams]);
+	useEffect(() => {
+		Promise.resolve().then(() => refreshAgents());
+	}, [refreshAgents]);
 
   const handleOpenDetails = (agent: Agent) => {
     setSelectedAgent(agent);
@@ -103,43 +81,6 @@ export default function AgentsPage() {
       Promise.resolve().then(() => refreshAgents());
     } catch (err) {
       if (err instanceof Error) alert(err.message);
-    }
-  };
-
-  const handleOpenTeamEdit = (team: Team) => {
-    setSelectedTeam(team);
-    setTeamFormData({
-      mission: team.mission || ''
-    });
-    setIsTeamModalOpen(true);
-  };
-
-  const handleUpdateTeam = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedTeam) return;
-    
-    setIsSubmitting(true);
-    setError(null);
-
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
-    try {
-      const response = await fetch(`${apiUrl}/api/v1/teams/${selectedTeam.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(teamFormData),
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to update team');
-      }
-
-      setIsTeamModalOpen(false);
-      Promise.resolve().then(() => refreshTeams());
-    } catch (err) {
-      if (err instanceof Error) setError(err.message);
-    } finally {
-      setIsSubmitting(false);
     }
   };
 
@@ -193,7 +134,7 @@ export default function AgentsPage() {
       }
 
       setIsModalOpen(false);
-      setFormData({ id: '', name: '', role: 'worker', mission: '', team_id: '01H0V6P6V6P6V6P6V6P6V6P6V6' });
+			setFormData({ id: '', name: '', role: 'worker', mission: '' });
       Promise.resolve().then(() => refreshAgents());
     } catch (err) {
       if (err instanceof Error) setError(err.message);
@@ -217,31 +158,6 @@ export default function AgentsPage() {
           Add Agent
         </button>
       </header>
-
-      {/* Team Mission Section */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {teams.map(team => (
-          <div key={team.id} className="bg-white rounded-xl shadow-sm ring-1 ring-slate-200 overflow-hidden border-l-4 border-indigo-500">
-            <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
-              <div className="flex items-center space-x-2">
-                <LayoutGrid className="h-4 w-4 text-indigo-600" />
-                <h3 className="font-bold text-slate-900">{team.name} Mission</h3>
-              </div>
-              <button 
-                onClick={() => handleOpenTeamEdit(team)}
-                className="text-slate-400 hover:text-indigo-600 transition-colors"
-              >
-                <Edit2 className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="p-6">
-              <p className="text-sm text-slate-600 italic leading-relaxed">
-                &quot;{team.mission || 'No overall mission defined for this team yet.'}&quot;
-              </p>
-            </div>
-          </div>
-        ))}
-      </div>
 
       <div className="bg-white shadow-sm ring-1 ring-slate-200 rounded-xl overflow-hidden border-b border-slate-300">
         <table className="min-w-full divide-y divide-slate-200">
@@ -366,7 +282,7 @@ export default function AgentsPage() {
                     <option value="observer">Observer</option>
                   </select>
                 </div>
-                <div>
+								<div>
                   <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Contribution Mission</label>
                   <textarea
                     placeholder="How does this agent contribute to the team's goals?"
@@ -390,56 +306,6 @@ export default function AgentsPage() {
                   className="px-4 py-2 text-sm font-bold text-white bg-indigo-600 rounded-md hover:bg-indigo-700 disabled:opacity-50 shadow-sm transition-all active:transform active:scale-95"
                 >
                   {isSubmitting ? 'Creating...' : 'Create Agent'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Team Edit Modal */}
-      {isTeamModalOpen && selectedTeam && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden ring-1 ring-black/5">
-            <div className="px-6 py-4 border-b border-slate-200 flex justify-between items-center bg-indigo-600 text-white">
-              <div className="flex items-center space-x-3">
-                <LayoutGrid className="h-5 w-5" />
-                <h3 className="text-lg font-bold">Edit Team Mission</h3>
-              </div>
-              <button onClick={() => setIsTeamModalOpen(false)} className="text-white/70 hover:text-white p-1 rounded-full hover:bg-white/10 transition-colors">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            
-            <form onSubmit={handleUpdateTeam} className="p-6 space-y-6">
-              <div className="space-y-4">
-                <div className="flex items-center space-x-2 text-indigo-700 mb-2">
-                  <Target className="h-4 w-4" />
-                  <h4 className="text-sm font-bold uppercase tracking-tight">Overall Team Mission</h4>
-                </div>
-                <textarea
-                  placeholder="Define the core purpose and goals of this team..."
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm h-40 resize-none shadow-inner leading-relaxed"
-                  value={teamFormData.mission}
-                  onChange={(e) => setTeamFormData({ ...teamFormData, mission: e.target.value })}
-                />
-              </div>
-
-              <div className="pt-4 flex justify-end space-x-3 border-t border-slate-100 mt-6">
-                <button
-                  type="button"
-                  onClick={() => setIsTeamModalOpen(false)}
-                  className="px-6 py-2 text-sm font-medium text-slate-600 hover:text-slate-800"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-bold flex items-center shadow-md active:transform active:scale-95 transition-all"
-                >
-                  <Save className="h-4 w-4 mr-2" />
-                  Save Team Mission
                 </button>
               </div>
             </form>

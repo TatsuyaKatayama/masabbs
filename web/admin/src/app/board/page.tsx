@@ -20,12 +20,14 @@ import {
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { MessageEnvelope } from '@/types';
 import Image from 'next/image';
+import TeamSwitcher from '@/components/TeamSwitcher';
 
 export default function BoardPage() {
   const messages = useStore((state) => state.messages);
   const setMessages = useStore((state) => state.setMessages);
   const threads = useStore((state) => state.threads);
   const setThreads = useStore((state) => state.setThreads);
+  const selectedTeamId = useStore((state) => state.selectedTeamId);
   
   const [command, setCommand] = useState('');
   const [threadIdInput, setThreadIdInput] = useState('');
@@ -75,12 +77,25 @@ export default function BoardPage() {
     }).join('\n');
   };
 
+  const visibleThreadIds = useMemo(() => {
+    return new Set(
+      threads
+        .filter((thread) => !selectedTeamId || thread.team_id === selectedTeamId)
+        .map((thread) => thread.id)
+    );
+  }, [threads, selectedTeamId]);
+
+  const visibleMessages = useMemo(() => {
+    if (!selectedTeamId) return messages;
+    return messages.filter((message) => message.thread_id && visibleThreadIds.has(message.thread_id));
+  }, [messages, selectedTeamId, visibleThreadIds]);
+
   // Group messages by thread_id
   const groupedMessages = useMemo(() => {
-    const groups: Record<string, typeof messages> = {};
-    const noThread: typeof messages = [];
+    const groups: Record<string, typeof visibleMessages> = {};
+    const noThread: typeof visibleMessages = [];
 
-    messages.forEach(msg => {
+    visibleMessages.forEach(msg => {
       if (msg.thread_id) {
         if (!groups[msg.thread_id]) groups[msg.thread_id] = [];
         groups[msg.thread_id].push(msg);
@@ -95,7 +110,7 @@ export default function BoardPage() {
     });
 
     return { groups, noThread };
-  }, [messages]);
+  }, [visibleMessages]);
 
   const handlePostTask = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -116,6 +131,10 @@ export default function BoardPage() {
 
       if (toAgentsInput.trim()) {
         payload.to = toAgentsInput.split(',').map(s => s.trim()).filter(s => s !== '');
+      }
+
+      if (selectedTeamId) {
+        payload.team_id = selectedTeamId;
       }
 
       const response = await fetch(`${apiUrl}/api/v1/threads`, {
@@ -139,9 +158,12 @@ export default function BoardPage() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)]">
-      <header className="mb-6">
-        <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Message Board</h1>
-        <p className="mt-2 text-lg text-slate-700 font-medium">Grouped by Thread ID</p>
+      <header className="mb-6 flex items-start justify-between">
+        <div>
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Message Board</h1>
+          <p className="mt-2 text-lg text-slate-700 font-medium">Grouped by Thread ID</p>
+        </div>
+        <TeamSwitcher />
       </header>
 
       {/* Main Board Area */}
@@ -206,7 +228,7 @@ export default function BoardPage() {
           </section>
         )}
 
-        {messages.length === 0 && (
+        {visibleMessages.length === 0 && (
           <div className="flex flex-col items-center justify-center py-24 text-slate-400 bg-white rounded-lg shadow-sm border border-slate-200 border-dashed">
             <MessageSquare className="h-12 w-12 mb-4 opacity-20" />
             <p className="italic text-lg font-light">No messages on the board yet.</p>

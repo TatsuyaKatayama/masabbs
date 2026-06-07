@@ -21,6 +21,7 @@ import {
 import '@xyflow/react/dist/style.css';
 
 import { Agent, Team, AgentRelation } from '@/types';
+import { useStore } from '@/store/useStore';
 
 // Custom Node component with 4 bidirectional connection points
 interface AgentNodeProps {
@@ -174,11 +175,14 @@ interface OrganizationGraphProps {
 
 export default function OrganizationGraph({ initialTeamId }: OrganizationGraphProps) {
   const [teams, setTeams] = useState<Team[]>([]);
-  const [selectedTeamId, setSelectedTeamId] = useState<string | undefined>(initialTeamId);
+  const selectedTeamId = useStore((state) => state.selectedTeamId) || initialTeamId;
+  const setSelectedTeamId = useStore((state) => state.setSelectedTeamId);
   const [allAgents, setAllAgents] = useState<Agent[]>([]);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [agentToAdd, setAgentToAdd] = useState<string>('');
+  const [agentToRemove, setAgentToRemove] = useState<string>('');
+  const teamAgentIds = new Set(nodes.map((node) => node.id));
 
   // Fetch teams for selector
   useEffect(() => {
@@ -190,21 +194,22 @@ export default function OrganizationGraph({ initialTeamId }: OrganizationGraphPr
           setSelectedTeamId(data[0].id);
         }
       });
-  }, [selectedTeamId]);
+  }, [selectedTeamId, setSelectedTeamId]);
 
   const fetchGraphData = useCallback(async () => {
     if (!selectedTeamId) return;
     try {
-      const [agentsRes, relationsRes] = await Promise.all([
+      const [agentsRes, teamAgentsRes, relationsRes] = await Promise.all([
         fetch('/api/v1/agents'),
+        fetch(`/api/v1/teams/${selectedTeamId}/agents`),
         fetch(`/api/v1/teams/${selectedTeamId}/relations`)
       ]);
       
       const agentsData: Agent[] = await agentsRes.json();
+      const teamAgents: Agent[] = await teamAgentsRes.json();
       const relations: AgentRelation[] = await relationsRes.json();
       
       setAllAgents(agentsData);
-      const teamAgents = agentsData.filter(a => a.team_id === selectedTeamId);
       
       // Update nodes while preserving current coordinates
       setNodes((currentNodes) => {
@@ -268,17 +273,27 @@ export default function OrganizationGraph({ initialTeamId }: OrganizationGraphPr
   const handleAddAgent = async () => {
     if (!selectedTeamId || !agentToAdd) return;
     try {
-      const res = await fetch(`/api/v1/agents/${agentToAdd}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ team_id: selectedTeamId }),
-      });
+      const res = await fetch(`/api/v1/teams/${selectedTeamId}/agents/${agentToAdd}`, { method: 'POST' });
       if (res.ok) {
         setAgentToAdd('');
         await fetchGraphData();
       }
     } catch (error) {
       console.error('Failed to add agent to team:', error);
+    }
+  };
+
+  const handleRemoveAgent = async () => {
+    if (!selectedTeamId || !agentToRemove) return;
+    if (!confirm('Remove this agent from the selected team? Relations for this team will also be removed.')) return;
+    try {
+      const res = await fetch(`/api/v1/teams/${selectedTeamId}/agents/${agentToRemove}`, { method: 'DELETE' });
+      if (res.ok) {
+        setAgentToRemove('');
+        await fetchGraphData();
+      }
+    } catch (error) {
+      console.error('Failed to remove agent from team:', error);
     }
   };
 
@@ -375,7 +390,7 @@ export default function OrganizationGraph({ initialTeamId }: OrganizationGraphPr
             >
               <option value="">Select an agent...</option>
               {allAgents
-                .filter(a => a.team_id !== selectedTeamId)
+                .filter(a => !teamAgentIds.has(a.id))
                 .map(agent => (
                   <option key={agent.id} value={agent.id}>{agent.name} ({agent.role})</option>
                 ))}
@@ -386,6 +401,29 @@ export default function OrganizationGraph({ initialTeamId }: OrganizationGraphPr
               className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-slate-300"
             >
               Add
+            </button>
+          </div>
+
+          <div className="flex items-center space-x-2 border-l pl-6">
+            <label className="text-sm font-medium text-slate-700">Remove:</label>
+            <select
+              value={agentToRemove}
+              onChange={(e) => setAgentToRemove(e.target.value)}
+              className="block w-48 rounded-md border-slate-300 py-1.5 text-slate-900 focus:ring-blue-500 sm:text-sm"
+            >
+              <option value="">Select an agent...</option>
+              {allAgents
+                .filter(a => teamAgentIds.has(a.id))
+                .map(agent => (
+                  <option key={agent.id} value={agent.id}>{agent.name} ({agent.role})</option>
+                ))}
+            </select>
+            <button
+              onClick={handleRemoveAgent}
+              disabled={!agentToRemove}
+              className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded shadow-sm text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:bg-slate-300"
+            >
+              Remove
             </button>
           </div>
         </div>

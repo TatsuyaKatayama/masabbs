@@ -216,7 +216,21 @@ func (h *Handler) captureCurrentSnapshot(ctx context.Context) (*models.Configura
 		}
 	}
 
-	// 3. Capture Relations
+	// 3. Capture Team Memberships
+	taRows, err := h.DB.Query(ctx, "SELECT team_id, agent_id, created_at FROM team_agents")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query team agents: %w", err)
+	}
+	defer taRows.Close()
+
+	for taRows.Next() {
+		var ta models.TeamAgent
+		if err := taRows.Scan(&ta.TeamID, &ta.AgentID, &ta.CreatedAt); err == nil {
+			snapshot.TeamAgents = append(snapshot.TeamAgents, ta)
+		}
+	}
+
+	// 4. Capture Relations
 	rRows, err := h.DB.Query(ctx, "SELECT id, team_id, source_id, target_id, source_handle, target_handle, relation_type, relation_category FROM agent_relations")
 	if err != nil {
 		return nil, fmt.Errorf("failed to query relations: %w", err)
@@ -233,7 +247,7 @@ func (h *Handler) captureCurrentSnapshot(ctx context.Context) (*models.Configura
 	return &snapshot, nil
 }
 
-// Helper: applySnapshot applies a snapshot configuration transactionally
+// Helper: applySnapshot applies a snapshot configuration transactionally as replace.
 func (h *Handler) applySnapshot(ctx context.Context, snap *models.ConfigurationSnapshot) error {
 	tx, err := h.DB.Begin(ctx)
 	if err != nil {
@@ -241,93 +255,8 @@ func (h *Handler) applySnapshot(ctx context.Context, snap *models.ConfigurationS
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Insert/Update Teams from snapshot
-	for _, t := range snap.Teams {
-		_, err = tx.Exec(ctx, `
-			INSERT INTO teams (id, name, description, mission, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6)
-			ON CONFLICT (id) DO UPDATE SET
-				name = EXCLUDED.name,
-				description = EXCLUDED.description,
-				mission = EXCLUDED.mission,
-				updated_at = EXCLUDED.updated_at
-		`, t.ID, t.Name, t.Description, t.Mission, t.CreatedAt, t.UpdatedAt)
-		if err != nil {
-			return fmt.Errorf("failed to upsert team %s: %w", t.ID, err)
-		}
-	}
-
-	// 2. Insert/Update Agents from snapshot
-	snapAgentIDs := make(map[string]bool)
-	for _, a := range snap.Agents {
-		snapAgentIDs[a.ID] = true
-		_, err = tx.Exec(ctx, `
-			INSERT INTO agents (id, name, role, mission, tools, capabilities, status, team_id, ui_pos_x, ui_pos_y, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-			ON CONFLICT (id) DO UPDATE SET
-				name = EXCLUDED.name,
-				role = EXCLUDED.role,
-				mission = EXCLUDED.mission,
-				tools = EXCLUDED.tools,
-				capabilities = EXCLUDED.capabilities,
-				status = EXCLUDED.status,
-				team_id = EXCLUDED.team_id,
-				ui_pos_x = EXCLUDED.ui_pos_x,
-				ui_pos_y = EXCLUDED.ui_pos_y,
-				updated_at = EXCLUDED.updated_at
-		`, a.ID, a.Name, a.Role, a.Mission, a.Tools, a.Capabilities, a.Status, a.TeamID, a.UIPosX, a.UIPosY, a.CreatedAt, a.UpdatedAt)
-		if err != nil {
-			return fmt.Errorf("failed to upsert agent %s: %w", a.ID, err)
-		}
-	}
-
-	// 3. Deactivate agents that are NOT in the loaded snapshot
-	// Query current agent IDs in the DB
-	rows, err := tx.Query(ctx, "SELECT id FROM agents")
-	if err != nil {
+	if err := replaceConfigurationSnapshot(ctx, tx, snap); err != nil {
 		return err
-	}
-	var dbAgentIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err == nil {
-			dbAgentIDs = append(dbAgentIDs, id)
-		}
-	}
-	rows.Close()
-
-	for _, id := range dbAgentIDs {
-		if !snapAgentIDs[id] {
-			_, err = tx.Exec(ctx, "UPDATE agents SET team_id = NULL WHERE id = $1", id)
-			if err != nil {
-				return fmt.Errorf("failed to deactivate agent %s: %w", id, err)
-			}
-		}
-	}
-
-	// 4. Update Agent Relations from snapshot
-	// Clear the old relations for teams loaded in this snapshot
-	for _, t := range snap.Teams {
-		_, err = tx.Exec(ctx, "DELETE FROM agent_relations WHERE team_id = $1", t.ID)
-		if err != nil {
-			return fmt.Errorf("failed to clear agent relations for team %s: %w", t.ID, err)
-		}
-	}
-
-	// Insert relations
-	for _, r := range snap.Relations {
-		_, err = tx.Exec(ctx, `
-			INSERT INTO agent_relations (id, team_id, source_id, target_id, source_handle, target_handle, relation_type, relation_category)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			ON CONFLICT (source_id, target_id, relation_type) DO UPDATE SET
-				source_handle = EXCLUDED.source_handle,
-				target_handle = EXCLUDED.target_handle,
-				team_id = EXCLUDED.team_id,
-				relation_category = EXCLUDED.relation_category
-		`, r.ID, r.TeamID, r.SourceID, r.TargetID, r.SourceHandle, r.TargetHandle, r.RelationType, r.RelationCategory)
-		if err != nil {
-			return fmt.Errorf("failed to insert agent relation: %w", err)
-		}
 	}
 
 	return tx.Commit(ctx)

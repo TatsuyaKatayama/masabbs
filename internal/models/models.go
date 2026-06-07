@@ -43,6 +43,13 @@ type AgentRelation struct {
 	RelationCategory string `json:"relation_category" db:"relation_category"` // vertical, horizontal
 }
 
+// TeamAgent represents many-to-many team membership for agents.
+type TeamAgent struct {
+	TeamID    string    `json:"team_id" db:"team_id"`
+	AgentID   string    `json:"agent_id" db:"agent_id"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
+}
+
 // NetworkMember represents an adjacent agent with a relative relation
 type NetworkMember struct {
 	AgentID      string          `json:"agent_id"`
@@ -66,20 +73,39 @@ type TeamBlueprint struct {
 
 // ConfigurationSnapshot represents a snapshot of team and agent configurations (v1.3.0)
 type ConfigurationSnapshot struct {
-	Teams     []Team          `json:"teams"`
-	Agents    []Agent         `json:"agents"`
-	Relations []AgentRelation `json:"relations"`
-	Threads   []Thread        `json:"threads"`
+	Teams      []Team          `json:"teams"`
+	Agents     []Agent         `json:"agents"`
+	TeamAgents []TeamAgent     `json:"team_agents"`
+	Relations  []AgentRelation `json:"relations"`
+}
+
+// ThreadSnapshot represents a replaceable snapshot of threads and their history.
+type ThreadSnapshot struct {
+	Threads []Thread  `json:"threads"`
+	Tasks   []Task    `json:"tasks"`
+	Logs    []TaskLog `json:"logs"`
+}
+
+// FullSnapshot represents a full backup of configuration and thread history.
+type FullSnapshot struct {
+	Teams      []Team          `json:"teams"`
+	Agents     []Agent         `json:"agents"`
+	TeamAgents []TeamAgent     `json:"team_agents"`
+	Relations  []AgentRelation `json:"relations"`
+	Threads    []Thread        `json:"threads"`
+	Tasks      []Task          `json:"tasks"`
+	Logs       []TaskLog       `json:"logs"`
+	Configs    []Config        `json:"configs"`
 }
 
 // Config represents a saved configuration record in the database (v1.3.0)
 type Config struct {
-	ID          string    `json:"id" db:"id"`
-	Name        string    `json:"name" db:"name"`
-	Description string    `json:"description" db:"description"`
+	ID          string          `json:"id" db:"id"`
+	Name        string          `json:"name" db:"name"`
+	Description string          `json:"description" db:"description"`
 	Data        json.RawMessage `json:"data" db:"data"`
-	CreatedAt   time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
+	CreatedAt   time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at" db:"updated_at"`
 }
 
 // Thread represents a task thread
@@ -93,7 +119,6 @@ type Thread struct {
 	CreatedAt      time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at" db:"updated_at"`
 }
-
 
 // Task represents a record in the 'tasks' table
 type Task struct {
