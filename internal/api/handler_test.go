@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,6 +134,54 @@ func TestTeamOrganizationAPI(t *testing.T) {
 
 	e := echo.New()
 	h := &Handler{DB: db}
+
+	t.Run("CreateTeam", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/teams", strings.NewReader(`{"name":"New Team","description":"new desc","mission":"new mission"}`))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		err := h.CreateTeam(e.NewContext(req, rec))
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusCreated, rec.Code)
+
+		var team models.Team
+		err = json.Unmarshal(rec.Body.Bytes(), &team)
+		require.NoError(t, err)
+		assert.NotEmpty(t, team.ID)
+		assert.Equal(t, "New Team", team.Name)
+		assert.Equal(t, "new mission", team.Mission)
+	})
+
+	t.Run("DeleteTeam cascades memberships and nulls thread team", func(t *testing.T) {
+		_, err := db.Exec(ctx, "INSERT INTO teams (id, name) VALUES ('t-delete', 'Delete Me')")
+		require.NoError(t, err)
+		_, err = db.Exec(ctx, "INSERT INTO agents (id, name, role) VALUES ('delete-agent', 'Delete Agent', 'worker')")
+		require.NoError(t, err)
+		_, err = db.Exec(ctx, "INSERT INTO team_agents (team_id, agent_id) VALUES ('t-delete', 'delete-agent')")
+		require.NoError(t, err)
+		_, err = db.Exec(ctx, "INSERT INTO threads (id, created_by_agent, status, team_id) VALUES ('delete-thread', 'delete-agent', 'open', 't-delete')")
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/teams/t-delete", nil)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetPath("/api/v1/teams/:id")
+		c.SetParamNames("id")
+		c.SetParamValues("t-delete")
+
+		err = h.DeleteTeam(c)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusNoContent, rec.Code)
+
+		var count int
+		err = db.QueryRow(ctx, "SELECT COUNT(*) FROM team_agents WHERE team_id = 't-delete'").Scan(&count)
+		require.NoError(t, err)
+		assert.Equal(t, 0, count)
+
+		var teamID *string
+		err = db.QueryRow(ctx, "SELECT team_id FROM threads WHERE id = 'delete-thread'").Scan(&teamID)
+		require.NoError(t, err)
+		assert.Nil(t, teamID)
+	})
 
 	t.Run("GetAgentNetwork - Complex Mixed Relations for Agent X", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/agents/x/network", nil)

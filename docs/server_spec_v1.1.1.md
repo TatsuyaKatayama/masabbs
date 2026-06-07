@@ -257,7 +257,9 @@ configs (
 | Method | Path | 説明 |
 |---|---|---|
 | GET | `/teams` | team 一覧 |
+| POST | `/teams` | team 新規作成 |
 | PATCH | `/teams/:id` | team mission などを更新 |
+| DELETE | `/teams/:id` | team 削除。memberships/relations は削除され、threads.team_id は NULL |
 | GET | `/teams/:id/agents` | team 所属 agent 一覧 |
 | POST | `/teams/:id/agents/:agent_id` | agent を team に追加 |
 | DELETE | `/teams/:id/agents/:agent_id` | agent を team から除外。同 team の relation も削除 |
@@ -357,6 +359,9 @@ Full restore は transaction 内で実行し、失敗時は rollback する。
 ### Org Tree
 
 - team 切り替え
+- team 新規作成
+- team mission 編集
+- team 削除
 - team に agent を追加
 - team から agent を除外
 - relation 作成・削除

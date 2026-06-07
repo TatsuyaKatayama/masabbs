@@ -91,13 +91,17 @@ Next build は Google Fonts 取得が必要になる場合がある。
 | ID | 内容 | 期待結果 |
 |---|---|---|
 | API-TEAM-001 | team 一覧取得 | `200 []` |
-| API-TEAM-002 | team 更新 | `200` |
-| API-TEAM-003 | team に agent を追加 | `team_agents` に insert |
-| API-TEAM-004 | 同じ agent を同じ team に再追加 | idempotent |
-| API-TEAM-005 | team から agent を除外 | `team_agents` から delete |
-| API-TEAM-006 | team から agent 除外時に同 team の relation も削除 | 整合性維持 |
-| API-TEAM-007 | team 所属 agent 一覧 | `team_agents` ベースで返す |
-| API-TEAM-008 | agent が複数 team に所属できる | 複数 `team_agents` が存在 |
+| API-TEAM-002 | team 作成 | `201` と team JSON |
+| API-TEAM-003 | team 更新 | `200` |
+| API-TEAM-004 | team 削除 | `204` |
+| API-TEAM-005 | team 削除時の memberships/relations | cascade で削除 |
+| API-TEAM-006 | team 削除時の threads | `team_id` が NULL |
+| API-TEAM-007 | team に agent を追加 | `team_agents` に insert |
+| API-TEAM-008 | 同じ agent を同じ team に再追加 | idempotent |
+| API-TEAM-009 | team から agent を除外 | `team_agents` から delete |
+| API-TEAM-010 | team から agent 除外時に同 team の relation も削除 | 整合性維持 |
+| API-TEAM-011 | team 所属 agent 一覧 | `team_agents` ベースで返す |
+| API-TEAM-012 | agent が複数 team に所属できる | 複数 `team_agents` が存在 |
 
 ### 3.4 Relations
 
@@ -203,10 +207,13 @@ restore はすべて replace であり merge ではない。
 | ID | 内容 | 期待結果 |
 |---|---|---|
 | UI-ORG-001 | team 切り替え | graph が指定 team で更新 |
-| UI-ORG-002 | agent を team に追加 | membership API を呼ぶ |
-| UI-ORG-003 | agent を team から除外 | confirm 後、relation も削除 |
-| UI-ORG-004 | relation 作成 | 同一 team 所属 agent 間のみ成功 |
-| UI-ORG-005 | backup panel が表示されない | graph 領域を圧迫しない |
+| UI-ORG-002 | Team プルダウンから新規作成 | `POST /teams` 後に作成 team を選択 |
+| UI-ORG-003 | team mission 編集 | `PATCH /teams/:id` で保存 |
+| UI-ORG-004 | team 削除 | confirm 後 `DELETE /teams/:id` |
+| UI-ORG-005 | agent を team に追加 | membership API を呼ぶ |
+| UI-ORG-006 | agent を team から除外 | confirm 後、relation も削除 |
+| UI-ORG-007 | relation 作成 | 同一 team 所属 agent 間のみ成功 |
+| UI-ORG-008 | backup panel が表示されない | graph 領域を圧迫しない |
 
 ### 5.3 Message Board
 
