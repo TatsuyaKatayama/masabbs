@@ -49,7 +49,9 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 	api.GET("/storage/presign", h.GetS3PresignedURL)
 
 	api.GET("/teams", h.GetTeams)
+	api.POST("/teams", h.CreateTeam)
 	api.PATCH("/teams/:id", h.UpdateTeam)
+	api.DELETE("/teams/:id", h.DeleteTeam)
 	api.GET("/teams/:id/agents", h.GetTeamAgents)
 	api.POST("/teams/:id/agents/:agent_id", h.AddTeamAgent)
 	api.DELETE("/teams/:id/agents/:agent_id", h.RemoveTeamAgent)
@@ -440,6 +442,12 @@ type UpdateTeamRequest struct {
 	Mission     *string `json:"mission,omitempty"`
 }
 
+type CreateTeamRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Mission     string `json:"mission,omitempty"`
+}
+
 func (h *Handler) GetTeams(c echo.Context) error {
 	rows, err := h.DB.Query(c.Request().Context(), `
 		SELECT id, name, description, mission, created_at, updated_at
@@ -462,6 +470,32 @@ func (h *Handler) GetTeams(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, teams)
+}
+
+func (h *Handler) CreateTeam(c echo.Context) error {
+	var req CreateTeamRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request format"})
+	}
+	if req.Name == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "team name is required"})
+	}
+
+	teamID := ulid.Make().String()
+	var team models.Team
+	err := h.DB.QueryRow(c.Request().Context(), `
+		INSERT INTO teams (id, name, description, mission)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, name, description, mission, created_at, updated_at
+	`, teamID, req.Name, req.Description, req.Mission).Scan(
+		&team.ID, &team.Name, &team.Description, &team.Mission, &team.CreatedAt, &team.UpdatedAt,
+	)
+	if err != nil {
+		c.Logger().Errorf("failed to create team: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create team"})
+	}
+
+	return c.JSON(http.StatusCreated, team)
 }
 
 func (h *Handler) GetTeamAgents(c echo.Context) error {
@@ -589,6 +623,24 @@ func (h *Handler) UpdateTeam(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"message": "team updated successfully"})
+}
+
+func (h *Handler) DeleteTeam(c echo.Context) error {
+	id := c.Param("id")
+	if id == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "team id is required"})
+	}
+
+	res, err := h.DB.Exec(c.Request().Context(), "DELETE FROM teams WHERE id = $1", id)
+	if err != nil {
+		c.Logger().Errorf("failed to delete team: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to delete team"})
+	}
+	if res.RowsAffected() == 0 {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "team not found"})
+	}
+
+	return c.NoContent(http.StatusNoContent)
 }
 
 func (h *Handler) GetThreads(c echo.Context) error {

@@ -22,7 +22,27 @@ jobs:
       - name: Download Dependencies
         run: go mod download
 
+      - name: Pre-pull Testcontainers images
+        run: |
+          pull_with_retry() {
+            image="$1"
+            for i in 1 2 3 4 5; do
+              echo "Pulling ${image} (attempt ${i}/5)"
+              if docker pull "${image}"; then
+                return 0
+              fi
+              sleep $((i * 10))
+            done
+            echo "Failed to pull ${image}"
+            return 1
+          }
+
+          pull_with_retry postgres:16-alpine
+          pull_with_retry nats:2.10-alpine
+
       - name: Run Tests
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
         run: go test -v ./...
 
       - name: Build Server
@@ -78,6 +98,25 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Pre-pull Compose images
+        run: |
+          pull_with_retry() {
+            image="$1"
+            for i in 1 2 3 4 5; do
+              echo "Pulling ${image} (attempt ${i}/5)"
+              if docker pull "${image}"; then
+                return 0
+              fi
+              sleep $((i * 10))
+            done
+            echo "Failed to pull ${image}"
+            return 1
+          }
+
+          pull_with_retry nats:2.10-alpine
+          pull_with_retry postgres:16-alpine
+          pull_with_retry minio/minio:latest
 
       - name: Start services
         run: docker compose up -d --build

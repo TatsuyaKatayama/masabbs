@@ -182,19 +182,31 @@ export default function OrganizationGraph({ initialTeamId }: OrganizationGraphPr
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [agentToAdd, setAgentToAdd] = useState<string>('');
   const [agentToRemove, setAgentToRemove] = useState<string>('');
+  const [teamMission, setTeamMission] = useState('');
+  const [isSavingTeam, setIsSavingTeam] = useState(false);
   const teamAgentIds = new Set(nodes.map((node) => node.id));
+  const selectedTeam = teams.find((team) => team.id === selectedTeamId);
+
+  const refreshTeams = useCallback(async () => {
+    const res = await fetch('/api/v1/teams');
+    const data: Team[] = await res.json();
+    if (!Array.isArray(data)) return;
+    setTeams(data);
+    if (!selectedTeamId && data.length > 0) {
+      setSelectedTeamId(data[0].id);
+      setTeamMission(data[0].mission || '');
+      return;
+    }
+    const currentTeam = data.find((team) => team.id === selectedTeamId);
+    setTeamMission(currentTeam?.mission || '');
+  }, [selectedTeamId, setSelectedTeamId]);
 
   // Fetch teams for selector
   useEffect(() => {
-    fetch('/api/v1/teams')
-      .then(res => res.json())
-      .then(data => {
-        setTeams(data);
-        if (!selectedTeamId && data.length > 0) {
-          setSelectedTeamId(data[0].id);
-        }
-      });
-  }, [selectedTeamId, setSelectedTeamId]);
+    Promise.resolve()
+      .then(() => refreshTeams())
+      .catch((error) => console.error('Failed to fetch teams:', error));
+  }, [refreshTeams]);
 
   const fetchGraphData = useCallback(async () => {
     if (!selectedTeamId) return;
@@ -280,6 +292,81 @@ export default function OrganizationGraph({ initialTeamId }: OrganizationGraphPr
       }
     } catch (error) {
       console.error('Failed to add agent to team:', error);
+    }
+  };
+
+  const handleTeamChange = async (value: string) => {
+    if (value !== '__create__') {
+      setSelectedTeamId(value || undefined);
+      const nextTeam = teams.find((team) => team.id === value);
+      setTeamMission(nextTeam?.mission || '');
+      return;
+    }
+
+    const name = prompt('New team name');
+    if (!name?.trim()) return;
+
+    try {
+      const res = await fetch('/api/v1/teams', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to create team');
+      }
+
+      const team: Team = await res.json();
+      setTeams((current) => [...current, team].sort((a, b) => a.name.localeCompare(b.name)));
+      setSelectedTeamId(team.id);
+      setTeamMission(team.mission || '');
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to create team');
+    }
+  };
+
+  const handleSaveTeamMission = async () => {
+    if (!selectedTeamId) return;
+    setIsSavingTeam(true);
+    try {
+      const res = await fetch(`/api/v1/teams/${selectedTeamId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mission: teamMission }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to save team mission');
+      }
+      setTeams((current) => current.map((team) => team.id === selectedTeamId ? { ...team, mission: teamMission } : team));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to save team mission');
+    } finally {
+      setIsSavingTeam(false);
+    }
+  };
+
+  const handleDeleteTeam = async () => {
+    if (!selectedTeamId || !selectedTeam) return;
+    if (!confirm(`Delete team "${selectedTeam.name}"?\n\nMemberships and relations will be removed. Existing threads will remain but lose their team assignment.`)) return;
+
+    try {
+      const res = await fetch(`/api/v1/teams/${selectedTeamId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to delete team');
+      }
+
+      const remainingTeams = teams.filter((team) => team.id !== selectedTeamId);
+      setTeams(remainingTeams);
+      const nextTeam = remainingTeams[0];
+      setSelectedTeamId(nextTeam?.id);
+      setTeamMission(nextTeam?.mission || '');
+      setNodes([]);
+      setEdges([]);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to delete team');
     }
   };
 
@@ -371,10 +458,11 @@ export default function OrganizationGraph({ initialTeamId }: OrganizationGraphPr
           <div className="flex items-center space-x-2">
             <label className="text-sm font-medium text-slate-700">Team:</label>
             <select 
-              value={selectedTeamId} 
-              onChange={(e) => setSelectedTeamId(e.target.value)}
+              value={selectedTeamId || ''}
+              onChange={(e) => handleTeamChange(e.target.value)}
               className="block w-40 rounded-md border-slate-300 py-1.5 text-slate-900 focus:ring-blue-500 sm:text-sm"
             >
+              <option value="__create__">＋ Create new team...</option>
               {teams.map(team => (
                 <option key={team.id} value={team.id}>{team.name}</option>
               ))}
@@ -430,6 +518,35 @@ export default function OrganizationGraph({ initialTeamId }: OrganizationGraphPr
         <div className="text-[10px] text-slate-400 uppercase tracking-wider font-bold text-right">
           Organization Graph Editor v1.2<br/>
           <span className="text-blue-500">Boss (Blue)</span> | <span className="text-emerald-500">Coworker (Green)</span>
+        </div>
+      </div>
+
+      <div className="border-b border-slate-200 bg-white px-4 py-3">
+        <div className="flex items-start gap-4">
+          <div className="min-w-40 pt-1">
+            <div className="text-xs font-black uppercase tracking-widest text-slate-400">Team Mission</div>
+            <div className="mt-1 text-sm font-bold text-slate-900">{selectedTeam?.name || 'No team selected'}</div>
+          </div>
+          <textarea
+            value={teamMission}
+            onChange={(e) => setTeamMission(e.target.value)}
+            placeholder="Define this team's mission..."
+            className="min-h-16 flex-1 resize-y rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 shadow-inner focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+          <button
+            onClick={handleSaveTeamMission}
+            disabled={!selectedTeamId || isSavingTeam}
+            className="rounded-md bg-indigo-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {isSavingTeam ? 'Saving...' : 'Save Mission'}
+          </button>
+          <button
+            onClick={handleDeleteTeam}
+            disabled={!selectedTeamId}
+            className="rounded-md border border-red-200 bg-white px-4 py-2 text-xs font-bold text-red-700 shadow-sm hover:bg-red-50 disabled:opacity-50"
+          >
+            Delete Team
+          </button>
         </div>
       </div>
       
