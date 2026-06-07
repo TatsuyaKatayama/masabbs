@@ -54,6 +54,15 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 	api.POST("/relations", h.CreateRelation)
 	api.DELETE("/relations/:id", h.DeleteRelation)
 
+	// Presets Configuration Endpoints
+	api.GET("/configs", h.GetConfigs)
+	api.POST("/configs", h.CreateConfig)
+	api.DELETE("/configs/:id", h.DeleteConfig)
+	api.POST("/configs/:id/load", h.LoadConfig)
+	RegisterThreadSnapshotRoutes(e, db)
+	api.GET("/configs/export", h.ExportConfig)
+	api.POST("/configs/import", h.ImportConfig)
+
 	// WebSocket for Admin UI
 
 	e.GET("/ws", func(c echo.Context) error {
@@ -61,6 +70,7 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 		return nil
 	})
 }
+
 
 type CreateThreadRequest struct {
 	ThreadID       *string  `json:"thread_id,omitempty"`
@@ -70,12 +80,14 @@ type CreateThreadRequest struct {
 	Observers      []string `json:"observers,omitempty"`
 	ParentThreadID *string  `json:"parent_thread_id,omitempty"`
 	Deadline       string   `json:"deadline"`
+	TeamID         *string  `json:"team_id,omitempty"`
 }
 
 type CreateThreadResponse struct {
 	ThreadID string `json:"thread_id"`
 	InputDir string `json:"input_dir"`
 }
+
 
 func (h *Handler) CreateThread(c echo.Context) error {
 	ctx := c.Request().Context()
@@ -120,14 +132,15 @@ func (h *Handler) CreateThread(c echo.Context) error {
 
 		// 3. Create DB record
 		_, err = h.DB.Exec(ctx, `
-			INSERT INTO threads (id, parent_thread_id, created_by_agent, status)
-			VALUES ($1, $2, $3, 'open')
-		`, threadID, req.ParentThreadID, req.CreatedByAgent)
+			INSERT INTO threads (id, parent_thread_id, created_by_agent, status, team_id)
+			VALUES ($1, $2, $3, 'open', $4)
+		`, threadID, req.ParentThreadID, req.CreatedByAgent, req.TeamID)
 		if err != nil {
 			c.Logger().Errorf("failed to insert thread: %v", err)
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database record creation failed"})
 		}
 	}
+
 
 	// 4. Publish to NATS
 	taskPayload := models.TaskPayload{
@@ -490,7 +503,7 @@ func (h *Handler) UpdateTeam(c echo.Context) error {
 
 func (h *Handler) GetThreads(c echo.Context) error {
 	rows, err := h.DB.Query(c.Request().Context(), `
-		SELECT id, parent_thread_id, created_by_agent, assigned_agent, status, created_at, updated_at
+		SELECT id, parent_thread_id, created_by_agent, assigned_agent, status, team_id, created_at, updated_at
 		FROM threads
 		ORDER BY updated_at DESC
 	`)
@@ -504,7 +517,7 @@ func (h *Handler) GetThreads(c echo.Context) error {
 		var t models.Thread
 		err := rows.Scan(
 			&t.ID, &t.ParentThreadID, &t.CreatedByAgent, &t.AssignedAgent,
-			&t.Status, &t.CreatedAt, &t.UpdatedAt,
+			&t.Status, &t.TeamID, &t.CreatedAt, &t.UpdatedAt,
 		)
 		if err != nil {
 			continue
@@ -514,6 +527,7 @@ func (h *Handler) GetThreads(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, threads)
 }
+
 
 func (h *Handler) GetThreadTasks(c echo.Context) error {
 	threadID := c.Param("id")

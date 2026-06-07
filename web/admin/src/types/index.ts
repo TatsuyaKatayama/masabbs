@@ -50,11 +50,21 @@ export interface Thread {
   created_by_agent: string;
   assigned_agent?: string;
   status: ThreadStatus;
+  team_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Config {
+  id: string;
+  name: string;
+  description?: string;
   created_at: string;
   updated_at: string;
 }
 
 export type MessageType = 'task' | 'offer' | 'assign' | 'result' | 'status' | 'event' | 'shutdown';
+
 
 export interface MessageEnvelope {
   id?: string;

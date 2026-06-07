@@ -64,6 +64,24 @@ type TeamBlueprint struct {
 	Members          []Agent `json:"members"`
 }
 
+// ConfigurationSnapshot represents a snapshot of team and agent configurations (v1.3.0)
+type ConfigurationSnapshot struct {
+	Teams     []Team          `json:"teams"`
+	Agents    []Agent         `json:"agents"`
+	Relations []AgentRelation `json:"relations"`
+	Threads   []Thread        `json:"threads"`
+}
+
+// Config represents a saved configuration record in the database (v1.3.0)
+type Config struct {
+	ID          string    `json:"id" db:"id"`
+	Name        string    `json:"name" db:"name"`
+	Description string    `json:"description" db:"description"`
+	Data        json.RawMessage `json:"data" db:"data"`
+	CreatedAt   time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
+}
+
 // Thread represents a task thread
 type Thread struct {
 	ID             string    `json:"id" db:"id"`
@@ -71,9 +89,11 @@ type Thread struct {
 	CreatedByAgent string    `json:"created_by_agent" db:"created_by_agent"`
 	AssignedAgent  *string   `json:"assigned_agent,omitempty" db:"assigned_agent"`
 	Status         string    `json:"status" db:"status"` // open, assigned, processing, etc.
+	TeamID         *string   `json:"team_id,omitempty" db:"team_id"`
 	CreatedAt      time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at" db:"updated_at"`
 }
+
 
 // Task represents a record in the 'tasks' table
 type Task struct {

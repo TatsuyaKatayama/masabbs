@@ -45,9 +45,11 @@ CREATE TABLE IF NOT EXISTS threads (
     created_by_agent TEXT REFERENCES agents(id) ON DELETE CASCADE,
     assigned_agent TEXT REFERENCES agents(id) ON DELETE SET NULL,
     status TEXT NOT NULL DEFAULT 'open', -- open / assigned / collecting / processing / done / error
+    team_id TEXT REFERENCES teams(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+
 
 -- Tasks Table (History of messages/actions)
 -- Includes 'observers' and other fields from the communication spec
@@ -106,3 +108,20 @@ CREATE TRIGGER update_threads_updated_at
     BEFORE UPDATE ON threads
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
+
+-- Configs Table (v1.3.0)
+CREATE TABLE IF NOT EXISTS configs (
+    id TEXT PRIMARY KEY,               -- ULID
+    name TEXT NOT NULL UNIQUE,         -- Unique human-readable name
+    description TEXT,                  -- Optional description
+    data JSONB NOT NULL,               -- Snapshot data (teams, agents, relations)
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+DROP TRIGGER IF EXISTS update_configs_updated_at ON configs;
+CREATE TRIGGER update_configs_updated_at
+    BEFORE UPDATE ON configs
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
