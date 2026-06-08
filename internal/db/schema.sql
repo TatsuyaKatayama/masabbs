@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY, -- ULID
     thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE,
     agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE, -- The 'from' field
-    type TEXT NOT NULL, -- task / offer / assign / result / status / event / shutdown
+    type TEXT NOT NULL, -- task / offer / assign / result / event
     to_agents TEXT[], -- Array of agent_ids
     observers TEXT[], -- Array of agent_ids
     payload JSONB NOT NULL, -- Structured payload defined in communication spec

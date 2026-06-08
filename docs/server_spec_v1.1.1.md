@@ -394,9 +394,7 @@ Full restore は transaction 内で実行し、失敗時は rollback する。
 | offer | `board.offer.<thread_id>` |
 | assign | `board.assign.<thread_id>` |
 | result | `board.result.<thread_id>` |
-| status | `board.status.<agent_id>` |
 | event | `board.event.<event_type>` |
-| shutdown | `board.shutdown.<agent_id>` |
 
 ### Message envelope
 

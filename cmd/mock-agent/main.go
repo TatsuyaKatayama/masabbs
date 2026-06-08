@@ -58,14 +58,6 @@ func main() {
 		log.Fatalf("Failed to create JetStream Pull Consumer: %v", err)
 	}
 
-	// Periodic status updates
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		for range ticker.C {
-			sendStatus(nc, "online", 0)
-		}
-	}()
-
 	log.Println("Starting autonomous monitoring loop (check_board)...")
 
 	// Autonomous Loop
@@ -105,23 +97,20 @@ func autonomousLoop(nc *nats.Conn, consumer jetstream.Consumer) {
 				continue
 			}
 
-			// B. Status Update to PROCESSING (Implicit by Ack and status publish)
+			// B. Update processing heartbeat in logs only
 			msg.InProgress() // Extend Ack window
-			sendStatus(nc, "busy", 10)
-			
+
 			log.Printf("Task acquired! Thread: %s", *env.ThreadID)
 
 			// C. Execute Task Pipeline
 			err := executeTask(nc, msg, *env.ThreadID)
-			
+
 			if err != nil {
 				log.Printf("Task failed: %v", err)
 				postResponse(nc, *env.ThreadID, "ERROR", fmt.Sprintf("Failed: %v", err))
-				sendStatus(nc, "online", 0)
 			} else {
 				// D. Acknowledge NATS message upon SUCCESS
 				msg.Ack()
-				sendStatus(nc, "online", 0)
 			}
 		}
 	}
@@ -130,23 +119,22 @@ func autonomousLoop(nc *nats.Conn, consumer jetstream.Consumer) {
 // 2. Fetch (sync_from_s3) -> 3. Compute (run_simulation) -> 4. Export (sync_to_s3) -> 5. Publish
 func executeTask(nc *nats.Conn, msg jetstream.Msg, threadID string) error {
 	threadDir := fmt.Sprintf("%s/%s/%s", workDir, agentID, threadID)
-	
+
 	// Simulate: sync_from_s3(thread_id, "input/", target_dir)
 	log.Printf("  [Skill] sync_from_s3: Downloading input for %s to %s", threadID, threadDir)
 	time.Sleep(1 * time.Second) // Network latency simulation
 	os.MkdirAll(threadDir+"/raw_data", 0755)
-	
+
 	// Simulate: run_simulation (Heartbeat required)
 	log.Println("  [Skill] run_simulation: Computing massive data...")
 	for i := 1; i <= 3; i++ {
 		time.Sleep(2 * time.Second) // Heavy computation
-		msg.InProgress() // Extend ACK (Heartbeat)
-		sendStatus(nc, "busy", 10+i*20)
+		msg.InProgress()            // Extend ACK (Heartbeat)
 	}
 
 	// Write massive pseudo-data to local SSD
 	os.WriteFile(threadDir+"/raw_data/huge_simulation.bin", []byte("100GB of simulation data..."), 0644)
-	
+
 	// Simulate: generate_summary_plots()
 	log.Println("  [Skill] generate_summary_plots: Extracting lightweight summary...")
 	summaryPath := threadDir + "/summary.pdf"
@@ -158,7 +146,7 @@ func executeTask(nc *nats.Conn, msg jetstream.Msg, threadID string) error {
 
 	// 5. Publish (post_response)
 	postResponse(nc, threadID, "SUCCESS", "Simulation complete. Summary uploaded to output/summary.pdf")
-	
+
 	log.Println("  Task Completed. Local data retained for Q&A.")
 	return nil
 }
@@ -166,7 +154,7 @@ func executeTask(nc *nats.Conn, msg jetstream.Msg, threadID string) error {
 // 4. post_response() Implementation (Internal completion of ULID, timestamp, etc.)
 func postResponse(nc *nats.Conn, threadID, status, message string) {
 	// Automatically append stderr/logs if status == ERROR in a real agent.
-	
+
 	payload, _ := json.Marshal(models.ResultPayload{
 		OutputDir: fmt.Sprintf("tasks/%s/output/", threadID),
 		ExitCode:  0,
@@ -193,21 +181,6 @@ func handleQuery(nc *nats.Conn, data []byte) {
 	log.Println("Received direct Q&A query. Reading from local mount directly...")
 	time.Sleep(500 * time.Millisecond) // Fast read from local SSD
 	log.Println("Answer generated from local /raw_data/. No S3 download required.")
-}
-
-func sendStatus(nc *nats.Conn, state string, progress int) {
-	payload, _ := json.Marshal(models.StatusPayload{
-		Progress: progress,
-		State:    state,
-	})
-	env := models.MessageEnvelope{
-		Type:      "status",
-		From:      agentID,
-		Timestamp: time.Now().Unix(),
-		Payload:   payload,
-	}
-	data, _ := json.Marshal(env)
-	nc.Publish(fmt.Sprintf("board.status.%s", agentID), data)
 }
 
 func getEnv(key, fallback string) string {

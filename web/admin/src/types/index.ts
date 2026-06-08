@@ -63,7 +63,7 @@ export interface Config {
   updated_at: string;
 }
 
-export type MessageType = 'task' | 'offer' | 'assign' | 'result' | 'status' | 'event' | 'shutdown';
+export type MessageType = 'task' | 'offer' | 'assign' | 'result' | 'event';
 
 
 export interface MessageEnvelope {

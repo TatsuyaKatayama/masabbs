@@ -29,7 +29,7 @@ func Connect(cfg Config) (*Client, error) {
 		nats.Name("masabbs-server"),
 		nats.Timeout(10 * time.Second),
 		nats.RetryOnFailedConnect(true),
-		nats.MaxReconnects(-1),             // Infinite reconnects for a daemon
+		nats.MaxReconnects(-1),              // Infinite reconnects for a daemon
 		nats.ReconnectWait(2 * time.Second), // Wait 2s between attempts
 	}
 
@@ -85,15 +85,6 @@ func (c *Client) setupStreams(ctx context.Context) error {
 			MaxAge:    7 * 24 * time.Hour, // 7 days
 		},
 		{
-			Name:        "board_status",
-			Description: "High frequency agent status updates",
-			Subjects: []string{
-				"board.status.*",
-			},
-			Retention: jetstream.LimitsPolicy,
-			MaxAge:    24 * time.Hour, // 1 day
-		},
-		{
 			Name:        "board_events",
 			Description: "General system events",
 			Subjects: []string{
@@ -101,15 +92,6 @@ func (c *Client) setupStreams(ctx context.Context) error {
 			},
 			Retention: jetstream.LimitsPolicy,
 			MaxAge:    3 * 24 * time.Hour, // 3 days
-		},
-		{
-			Name:        "board_shutdown",
-			Description: "Shutdown commands (WorkQueue)",
-			Subjects: []string{
-				"board.shutdown.*",
-			},
-			Retention: jetstream.WorkQueuePolicy,
-			MaxAge:    24 * time.Hour, // 1 day
 		},
 	}
 
@@ -121,7 +103,7 @@ func (c *Client) setupStreams(ctx context.Context) error {
 		}
 	}
 
-	log.Println("NATS JetStream streams (tasks, status, events, shutdown) configured successfully.")
+	log.Println("NATS JetStream streams (tasks, events) configured successfully.")
 	return nil
 }
 

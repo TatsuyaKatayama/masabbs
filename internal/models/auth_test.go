@@ -56,14 +56,6 @@ func TestCheckPermission(t *testing.T) {
 			wantErr:   ErrUnauthorized,
 		},
 		{
-			name:      "UT-AUTH-104: general agent cannot publish shutdown",
-			id:        "UT-AUTH-104",
-			role:      "worker",
-			isPublish: true,
-			subject:   "board.shutdown.123",
-			wantErr:   ErrUnauthorized,
-		},
-		{
 			name:      "UT-AUTH-109: NATS subject with wildcard publish",
 			id:        "UT-AUTH-109",
 			role:      "manager",

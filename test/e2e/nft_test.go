@@ -24,7 +24,7 @@ func TestNFT_CONC_001_HighConcurrency(t *testing.T) {
 
 	archiver := &worker.Archiver{DB: db, JS: nc.JS, Auth: authProvider}
 	go archiver.Start(ctx)
-	
+
 	guardian := &worker.Guardian{AuthProvider: authProvider, NC: nc.NC, DB: db}
 	go guardian.Start(ctx)
 
@@ -48,7 +48,7 @@ func TestNFT_CONC_001_HighConcurrency(t *testing.T) {
 			defer wg.Done()
 			threadID := fmt.Sprintf("01HGWY5X9A7Z4K2M3Q8P6R0V%02X", idx)
 			agentID := fmt.Sprintf("worker-%03d", idx)
-			
+
 			// 1. Create thread (as system/admin, usually manager does this)
 			_, err := db.Exec(ctx, "INSERT INTO threads (id, created_by_agent, status) VALUES ($1, 'agent-a', 'open')", threadID)
 			if err != nil {
@@ -56,7 +56,7 @@ func TestNFT_CONC_001_HighConcurrency(t *testing.T) {
 			}
 
 			// 2. Publish task (from manager agent-a)
-			// Note: agent-a might still hit rate limit if we are not careful, 
+			// Note: agent-a might still hit rate limit if we are not careful,
 			// but we'll use the pre-registered worker agents for results.
 			// Let's use a small sleep to spread manager tasks.
 			time.Sleep(time.Duration(idx*10) * time.Millisecond)
@@ -98,7 +98,7 @@ func TestNFT_REC_001_RecoveryAfterRestart(t *testing.T) {
 		Type: "task", ThreadID: &threadID, From: "agent-a", Timestamp: time.Now().Unix(), Payload: payload,
 	}
 	signAndPublish(t, nc, authProvider, creds["agent-a"], taskEnv, "board.task."+threadID)
-	
+
 	resPayload, _ := json.Marshal(models.ResultPayload{OutputDir: "out/", ExitCode: 0})
 	resEnv := models.MessageEnvelope{
 		Type: "result", ThreadID: &threadID, From: "agent-b", Timestamp: time.Now().Unix(), Payload: resPayload,
@@ -114,9 +114,9 @@ func TestNFT_REC_001_RecoveryAfterRestart(t *testing.T) {
 	archiverCtx, cancel := context.WithCancel(ctx)
 	archiver := &worker.Archiver{DB: db, JS: nc.JS, Auth: authProvider}
 	archiver.Start(archiverCtx)
-	
+
 	time.Sleep(5 * time.Second)
-	
+
 	db.QueryRow(ctx, "SELECT count(*) FROM tasks").Scan(&count)
 	assert.Equal(t, 2, count, "Archiver should process pending messages from JetStream after startup")
 	cancel()
@@ -131,22 +131,22 @@ func TestNFT_PERF_001_Latency(t *testing.T) {
 
 	archiver := &worker.Archiver{DB: db, JS: nc.JS, Auth: authProvider}
 	go archiver.Start(ctx)
-	
+
 	threadID := "01HGWY5X9A7Z4K2M3Q8P6R0V1K"
 	db.Exec(ctx, "INSERT INTO threads (id, created_by_agent, status) VALUES ($1, 'agent-a', 'open')", threadID)
 
-	payload, _ := json.Marshal(models.StatusPayload{Progress: 10, State: "running"})
+	payload, _ := json.Marshal(models.ResultPayload{OutputDir: "out/", ExitCode: 0, Message: "latency"})
 	env := models.MessageEnvelope{
-		Type: "status", ThreadID: &threadID, From: "agent-a", Timestamp: time.Now().Unix(), Payload: payload,
+		Type: "result", ThreadID: &threadID, From: "agent-a", Timestamp: time.Now().Unix(), Payload: payload,
 	}
 
 	start := time.Now()
-	signAndPublish(t, nc, authProvider, creds["agent-a"], env, "board.status."+threadID)
+	signAndPublish(t, nc, authProvider, creds["agent-a"], env, "board.result."+threadID)
 
 	// Wait for it to appear in DB
 	var taskID string
 	for i := 0; i < 50; i++ {
-		err := db.QueryRow(ctx, "SELECT id FROM tasks WHERE thread_id = $1 AND type = 'status'", threadID).Scan(&taskID)
+		err := db.QueryRow(ctx, "SELECT id FROM tasks WHERE thread_id = $1 AND type = 'result'", threadID).Scan(&taskID)
 		if err == nil {
 			break
 		}
@@ -172,8 +172,6 @@ func TestNFT_PERF_002_Throughput(t *testing.T) {
 	go archiver.Start(ctx)
 
 	const totalMsgs = 500
-	threadID := "01HGWY5X9A7Z4K2M3Q8P6R0V1L"
-	db.Exec(ctx, "INSERT INTO threads (id, created_by_agent, status) VALUES ($1, 'agent-a', 'open')", threadID)
 
 	// Pre-register many agents to avoid per-agent rate limits
 	numAgents := 50
@@ -188,17 +186,21 @@ func TestNFT_PERF_002_Throughput(t *testing.T) {
 	start := time.Now()
 	for i := 0; i < totalMsgs; i++ {
 		agentIdx := i % numAgents
-		payload, _ := json.Marshal(models.StatusPayload{Progress: i % 100, State: "running"})
+		threadID := fmt.Sprintf("throughput-thread-%03d", i)
+		_, err := db.Exec(ctx, "INSERT INTO threads (id, created_by_agent, status) VALUES ($1, 'agent-a', 'open')", threadID)
+		require.NoError(t, err)
+
+		payload, _ := json.Marshal(models.ResultPayload{OutputDir: "out/", ExitCode: 0, Message: fmt.Sprintf("msg-%d", i)})
 		env := models.MessageEnvelope{
-			Type: "status", ThreadID: &threadID, From: agentCreds[agentIdx].AgentID, Timestamp: time.Now().Unix(), Payload: payload,
+			Type: "result", ThreadID: &threadID, From: agentCreds[agentIdx].AgentID, Timestamp: time.Now().Unix(), Payload: payload,
 		}
-		signAndPublish(t, nc, authProvider, agentCreds[agentIdx], env, "board.status."+threadID)
+		signAndPublish(t, nc, authProvider, agentCreds[agentIdx], env, "board.result."+threadID)
 	}
 
 	// Wait for all messages to be in DB
 	var count int
 	for i := 0; i < 200; i++ { // 200 * 250ms = 50s に延長
-		db.QueryRow(ctx, "SELECT count(*) FROM tasks WHERE thread_id = $1", threadID).Scan(&count)
+		db.QueryRow(ctx, "SELECT count(*) FROM tasks WHERE type = 'result'").Scan(&count)
 		if count >= totalMsgs {
 			break
 		}

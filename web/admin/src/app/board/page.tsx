@@ -70,7 +70,6 @@ export default function BoardPage() {
       const time = new Date(m.timestamp * 1000).toLocaleTimeString();
       let content = '';
       if (m.type === 'task') content = m.payload.command as string;
-      else if (m.type === 'status') content = `${m.payload.state} (${m.payload.progress}%) - ${m.payload.message || ''}`;
       else content = JSON.stringify(m.payload);
       
       return `[${time}] ${m.from}: ${content}`;
@@ -330,7 +329,6 @@ function MessageItem({ message }: { message: MessageEnvelope }) {
           <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
             message.type === 'task' ? 'bg-blue-600 text-white' :
             message.type === 'result' ? 'bg-green-600 text-white' :
-            message.type === 'status' ? 'bg-amber-500 text-white' :
             'bg-slate-500 text-white'
           }`}>
             {message.type}

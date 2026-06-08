@@ -40,7 +40,7 @@ func NewProvider() (*Provider, error) {
 
 	accClaims := jwt.NewAccountClaims(accPubKey)
 	accClaims.Name = "masabbs-account"
-	
+
 	// Sign Account with Operator
 	accJWT, err := accClaims.Encode(opKey)
 	if err != nil {
@@ -81,13 +81,13 @@ func (p *Provider) GenerateAgentCredentials(agentID, role string) (*Credentials,
 	switch role {
 	case "manager":
 		userClaims.Pub.Allow.Add("board.tasks", "board.task.*", "board.assign.*")
-		userClaims.Sub.Allow.Add("board.offer.*", "board.result.*", "board.status.*", "board.event.*")
+		userClaims.Sub.Allow.Add("board.offer.*", "board.result.*", "board.event.*")
 	case "worker":
-		userClaims.Pub.Allow.Add("board.offer.*", "board.result.*", "board.status.*")
+		userClaims.Pub.Allow.Add("board.offer.*", "board.result.*")
 		userClaims.Sub.Allow.Add("board.tasks", "board.task.*", "board.assign.*", "board.event.*")
 	case "observer":
 		// Publish is empty
-		userClaims.Sub.Allow.Add("board.task.*", "board.result.*", "board.status.*", "board.event.*")
+		userClaims.Sub.Allow.Add("board.task.*", "board.result.*", "board.event.*")
 	case "admin": // For management server / operations
 		userClaims.Pub.Allow.Add("board.>")
 		userClaims.Sub.Allow.Add("board.>")
@@ -213,7 +213,7 @@ func (p *Provider) SignMessage(seed string, data []byte) (string, error) {
 func (p *Provider) GetRevocationList() map[string]int64 {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	
+
 	revs := make(map[string]int64)
 	now := time.Now()
 	for id, expiry := range p.revocations {

@@ -169,15 +169,6 @@ type ResultPayload struct {
 	Error     string `json:"error,omitempty"`
 }
 
-type StatusPayload struct {
-	Progress int    `json:"progress"`
-	State    string `json:"state"` // running, paused, error
-}
-
-type ShutdownPayload struct {
-	Reason string `json:"reason"`
-}
-
 // TaskLog represents a log entry for a thread or agent
 type TaskLog struct {
 	ID        int64     `json:"id" db:"id"`

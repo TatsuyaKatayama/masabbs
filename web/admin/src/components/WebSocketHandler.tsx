@@ -7,7 +7,6 @@ import { MessageEnvelope } from '@/types';
 
 export default function WebSocketHandler() {
   const addMessage = useStore((state) => state.addMessage);
-  const updateAgent = useStore((state) => state.updateAgent);
   const updateThread = useStore((state) => state.updateThread);
   const setAgents = useStore((state) => state.setAgents);
   const setThreads = useStore((state) => state.setThreads);
@@ -48,12 +47,6 @@ export default function WebSocketHandler() {
 
       // Special handling based on message type
       switch (message.type) {
-        case 'status':
-          updateAgent({
-            id: message.from,
-            status: typeof message.payload.state === 'string' && message.payload.state === 'running' ? 'busy' : 'online'
-          });
-          break;
         case 'assign':
           if (message.thread_id) {
             updateThread({
@@ -78,7 +71,7 @@ export default function WebSocketHandler() {
       unsubscribe();
       wsClient?.disconnect();
     };
-  }, [addMessage, updateAgent, updateThread, setAgents, setMessages, setThreads]);
+  }, [addMessage, updateThread, setAgents, setMessages, setThreads]);
 
   return null;
 }

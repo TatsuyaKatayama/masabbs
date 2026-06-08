@@ -14,7 +14,7 @@ func CheckPermission(role string, isPublish bool, subject string) error {
 	// Simple rule-based permission check based on specification
 	// In reality, this matches NATS JWT settings.
 	// Subject formats: board.task.*, board.assign.*, etc.
-	
+
 	parts := strings.Split(subject, ".")
 	if len(parts) < 2 || parts[0] != "board" {
 		// Wildcard board.*.> is forbidden for agents
@@ -40,13 +40,13 @@ func CheckPermission(role string, isPublish bool, subject string) error {
 				return nil
 			}
 		} else {
-			if msgType == "offer" || msgType == "result" || msgType == "status" {
+			if msgType == "offer" || msgType == "result" {
 				return nil
 			}
 		}
 	case "worker":
 		if isPublish {
-			if msgType == "offer" || msgType == "result" || msgType == "status" {
+			if msgType == "offer" || msgType == "result" {
 				return nil
 			}
 		} else {
@@ -58,15 +58,10 @@ func CheckPermission(role string, isPublish bool, subject string) error {
 		if isPublish {
 			return ErrUnauthorized // Observer cannot publish
 		} else {
-			if msgType == "tasks" || msgType == "task" || msgType == "result" || msgType == "status" {
+			if msgType == "tasks" || msgType == "task" || msgType == "result" {
 				return nil
 			}
 		}
-	}
-	
-	// shutdown is management server only, agents shouldn't publish it
-	if msgType == "shutdown" && role != "admin" {
-		return ErrUnauthorized
 	}
 
 	return ErrUnauthorized
