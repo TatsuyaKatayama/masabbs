@@ -25,7 +25,7 @@ type Archiver struct {
 // and persist them into the PostgreSQL 'tasks' table.
 func (a *Archiver) Start(ctx context.Context) error {
 	// Matches names in internal/nats/jetstream.go
-	streams := []string{"board_tasks", "board_status", "board_events"}
+	streams := []string{"board_tasks", "board_events"}
 
 	for _, streamName := range streams {
 		// 1. Ensure a unique durable consumer for each stream
@@ -42,7 +42,7 @@ func (a *Archiver) Start(ctx context.Context) error {
 		// 2. Start consuming
 		go func(name string, c jetstream.Consumer) {
 			log.Printf("Archiver started listening to stream: %s", name)
-			
+
 			consumeCtx, err := c.Consume(func(msg jetstream.Msg) {
 				a.processMessage(msg)
 			})
@@ -50,7 +50,7 @@ func (a *Archiver) Start(ctx context.Context) error {
 				log.Printf("Archiver error on stream %s: %v", name, err)
 				return
 			}
-			
+
 			<-ctx.Done()
 			consumeCtx.Stop()
 			log.Printf("Archiver stopped for stream: %s", name)
@@ -69,6 +69,12 @@ func (a *Archiver) processMessage(msg jetstream.Msg) {
 		return
 	}
 
+	if err := env.Validate(); err != nil {
+		log.Printf("Archiver: Invalid message from %s: %v", env.From, err)
+		msg.Ack()
+		return
+	}
+
 	// Signature Verification
 	if a.Auth != nil && os.Getenv("SKIP_SIG_VERIFY") != "true" {
 		// Verify impersonation
@@ -82,7 +88,7 @@ func (a *Archiver) processMessage(msg jetstream.Msg) {
 		sig := env.Signature
 		delete(envMap, "signature")
 		canonicalData, _ := json.Marshal(envMap) // Go sorts map keys!
-		
+
 		if err := a.Auth.VerifySignature(env.From, canonicalData, sig); err != nil {
 			log.Printf("Archiver: Invalid signature from %s: %v", env.From, err)
 			msg.Ack()
@@ -94,17 +100,6 @@ func (a *Archiver) processMessage(msg jetstream.Msg) {
 			log.Printf("Archiver: Dropping message from revoked agent %s", env.From)
 			msg.Ack()
 			return
-		}
-
-		// Role-based check for sensitive commands (e.g. shutdown)
-		if env.Type == "shutdown" {
-			var role string
-			err := a.DB.QueryRow(context.Background(), "SELECT role FROM agents WHERE id = $1", env.From).Scan(&role)
-			if err != nil || (role != "manager" && role != "admin") {
-				log.Printf("Archiver: Unauthorized shutdown attempt from agent %s (role: %s)", env.From, role)
-				msg.Ack()
-				return
-			}
 		}
 	}
 
@@ -146,7 +141,7 @@ func (a *Archiver) processMessage(msg jetstream.Msg) {
 					WHERE thread_id = $1 AND agent_id = $2 AND type = 'result'
 				)
 			`, env.ThreadID, env.From).Scan(&exists)
-			
+
 			if err == nil && exists {
 				msg.Ack()
 				return

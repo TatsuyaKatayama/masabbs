@@ -10,7 +10,7 @@
 |---|---|
 | REST API | Admin UI からの agent / team / thread / backup 操作 |
 | WebSocket | Admin UI へのリアルタイム更新 |
-| NATS JetStream | agent 間の task / result / status 等の非同期通信 |
+| NATS JetStream | agent 間の task / result / offer / assign 等の非同期通信 |
 | MinIO S3 API | thread artifacts の入出力 |
 
 ---
@@ -25,9 +25,7 @@
 | offer | `board.offer.<thread_id>` | thread_id | task への立候補 |
 | assign | `board.assign.<thread_id>` | thread_id | 実行者決定 |
 | result | `board.result.<thread_id>` | thread_id | 実行結果 |
-| status | `board.status.<agent_id>` | agent_id | agent 状態・進捗 |
 | event | `board.event.<event_type>` | event_type | システム通知 |
-| shutdown | `board.shutdown.<agent_id>` | agent_id | 個別 shutdown |
 
 ---
 
@@ -36,7 +34,7 @@
 ```json
 {
   "id": "optional-message-id",
-  "type": "task | offer | assign | result | status | event | shutdown",
+  "type": "task | offer | assign | result | event",
   "thread_id": "thread-id",
   "from": "agent-id",
   "to": ["agent-id"],
@@ -52,7 +50,7 @@
 |---|---:|---|
 | `id` | no | message id。DB の `tasks.id` に対応 |
 | `type` | yes | message type |
-| `thread_id` | no | thread 紐付け。status/event では省略可能 |
+| `thread_id` | no | thread 紐付け。event では省略可能 |
 | `from` | yes | 送信 agent id |
 | `to` | no | 宛先 agent ids |
 | `observers` | no | 監視 agent ids |
@@ -69,8 +67,6 @@
 | offer | `eta_seconds`, `confidence` | 立候補情報 |
 | assign | `reason` | assign 理由 |
 | result | `output_dir`, `exit_code`, `message`, `error` | 実行結果 |
-| status | `progress`, `state` | 進捗状態 |
-| shutdown | `reason` | shutdown 理由 |
 | event | 任意 JSON | システムイベント |
 
 `output_dir` は MinIO の相対 prefix を想定する。Admin UI は `/api/v1/storage/files` と `/api/v1/storage/presign` を通じて artifacts を表示する。

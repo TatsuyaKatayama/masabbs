@@ -15,7 +15,7 @@ import (
 func setupAuthNATSServer(t *testing.T, authProvider *auth.Provider) (*server.Server, string) {
 	opts := &server.Options{
 		Host: "127.0.0.1",
-		Port: -1, 
+		Port: -1,
 	}
 
 	opPubKey, _ := authProvider.OperatorKey.PublicKey()
@@ -59,7 +59,7 @@ func TestIntegration_AuthAndPermissions(t *testing.T) {
 
 	t.Run("UT-AUTH-105: Connect with expired JWT", func(t *testing.T) {
 		creds, _ := provider.GenerateExpiredCredentials("agent-expired")
-		
+
 		authOpt := nats.UserJWTAndSeed(creds.JWT, creds.NKeySeed)
 		_, err := nats.Connect(natsURL, authOpt, nats.Timeout(1*time.Second))
 		assert.Error(t, err)
@@ -68,7 +68,7 @@ func TestIntegration_AuthAndPermissions(t *testing.T) {
 
 	t.Run("UT-AUTH-106: Connect with invalid signature", func(t *testing.T) {
 		creds, _ := provider.GenerateInvalidSignatureCredentials("agent-invalid-sig")
-		
+
 		authOpt := nats.UserJWTAndSeed(creds.JWT, creds.NKeySeed)
 		_, err := nats.Connect(natsURL, authOpt, nats.Timeout(1*time.Second))
 		assert.Error(t, err)
@@ -78,7 +78,7 @@ func TestIntegration_AuthAndPermissions(t *testing.T) {
 	t.Run("Valid Manager Permissions (UT-AUTH-001)", func(t *testing.T) {
 		creds, _ := provider.GenerateAgentCredentials("manager-1", "manager")
 		authOpt := nats.UserJWTAndSeed(creds.JWT, creds.NKeySeed)
-		
+
 		nc, err := nats.Connect(natsURL, authOpt)
 		require.NoError(t, err)
 		defer nc.Close()
@@ -90,11 +90,11 @@ func TestIntegration_AuthAndPermissions(t *testing.T) {
 		nc.SetErrorHandler(func(conn *nats.Conn, subscription *nats.Subscription, e error) {
 			lastErr = e
 		})
-		
-		nc.Publish("board.shutdown.manager-1", []byte("test"))
+
+		nc.Publish("board.event.manager-1", []byte("test"))
 		nc.Flush()
 		time.Sleep(100 * time.Millisecond)
-		
+
 		if lastErr != nil {
 			assert.Contains(t, lastErr.Error(), "Permissions Violation")
 		}

@@ -22,7 +22,7 @@ func TestE2E_ATK_003_HugePayload(t *testing.T) {
 	// In the real server it's 100M, but we test with 1M to keep tests fast and efficient.
 	// The mechanism is the same.
 	e.Use(middleware.BodyLimit("1M"))
-	
+
 	e.POST("/api/v1/threads", func(c echo.Context) error {
 		return c.NoContent(http.StatusCreated)
 	})
@@ -61,12 +61,12 @@ func TestE2E_ATK_006_BurstLimit(t *testing.T) {
 
 	agentID := "agent-b"
 	threadID := "01HGWY5X9A7Z4K2M3Q8P6R0V1G"
-	
-	payload, _ := json.Marshal(models.StatusPayload{Progress: 50, State: "running"})
+
+	payload, _ := json.Marshal(models.ResultPayload{OutputDir: "out/", ExitCode: 0, Message: "running"})
 	env := models.MessageEnvelope{
-		Type: "status", ThreadID: &threadID, From: agentID, Timestamp: time.Now().Unix(), Payload: payload,
+		Type: "result", ThreadID: &threadID, From: agentID, Timestamp: time.Now().Unix(), Payload: payload,
 	}
-	subject := "board.status." + threadID
+	subject := "board.result." + threadID
 
 	// 1. Burst 15 msgs in 1 second (Should be allowed)
 	for i := 0; i < 15; i++ {
@@ -95,8 +95,8 @@ func TestE2E_ATK_001_RateLimit(t *testing.T) {
 	defer cancel()
 
 	archiver := &worker.Archiver{
-		DB: db,
-		JS: nc.JS,
+		DB:   db,
+		JS:   nc.JS,
 		Auth: authProvider,
 	}
 	go archiver.Start(ctx)
@@ -109,7 +109,7 @@ func TestE2E_ATK_001_RateLimit(t *testing.T) {
 
 	agentID := "agent-b"
 	threadID := "01HGWY5X9A7Z4K2M3Q8P6R0V1D"
-	
+
 	_, err := db.Exec(ctx, "INSERT INTO threads (id, created_by_agent, status) VALUES ($1, 'agent-a', 'open')", threadID)
 	require.NoError(t, err)
 
@@ -144,8 +144,8 @@ func TestE2E_ATK_004_IdImpersonation(t *testing.T) {
 	defer cancel()
 
 	archiver := &worker.Archiver{
-		DB: db,
-		JS: nc.JS,
+		DB:   db,
+		JS:   nc.JS,
 		Auth: authProvider,
 	}
 	go archiver.Start(ctx)
@@ -159,12 +159,12 @@ func TestE2E_ATK_004_IdImpersonation(t *testing.T) {
 	env := models.MessageEnvelope{
 		Type: "task", ThreadID: &threadID, From: "agent-a", Timestamp: time.Now().Unix(), Payload: payload,
 	}
-	
+
 	// Prepare canonical data for signing
 	data, _ := json.Marshal(env)
 	sig, _ := authProvider.SignMessage(creds["agent-b"].NKeySeed, data)
 	env.Signature = sig
-	
+
 	finalData, _ := json.Marshal(env)
 	nc.NC.Publish("board.task."+threadID, finalData)
 
@@ -175,31 +175,32 @@ func TestE2E_ATK_004_IdImpersonation(t *testing.T) {
 	assert.Equal(t, 0, count, "Impersonated message should NOT be persisted")
 }
 
-func TestE2E_ATK_005_UnauthorizedShutdown(t *testing.T) {
-	db, nc, authProvider, creds, cleanup := setupE2EEnvironment(t)
+func TestE2E_ATK_005_UnknownTypeRejected(t *testing.T) {
+	db, nc, authProvider, _, cleanup := setupE2EEnvironment(t)
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	archiver := &worker.Archiver{
-		DB: db,
-		JS: nc.JS,
+		DB:   db,
+		JS:   nc.JS,
 		Auth: authProvider,
 	}
 	go archiver.Start(ctx)
 
-	// agent-b (worker) tries to send shutdown
-	payload, _ := json.Marshal(models.ShutdownPayload{Reason: "I am evil"})
+	payload, _ := json.Marshal(map[string]string{"reason": "invalid type"})
 	env := models.MessageEnvelope{
-		Type: "shutdown", From: "agent-b", Timestamp: time.Now().Unix(), Payload: payload,
+		Type: "unknown_type", From: "admin-1", Timestamp: time.Now().Unix(), Payload: payload,
 	}
-	
-	signAndPublish(t, nc, authProvider, creds["agent-b"], env, "board.shutdown")
+
+	adminCreds, err := authProvider.GenerateAgentCredentials("admin-1", "admin")
+	require.NoError(t, err)
+	signAndPublish(t, nc, authProvider, adminCreds, env, "board.event.admin-1")
 
 	time.Sleep(3 * time.Second)
 
 	var count int
-	db.QueryRow(ctx, "SELECT count(*) FROM tasks WHERE type = 'shutdown' AND agent_id = 'agent-b'").Scan(&count)
-	assert.Equal(t, 0, count, "Unauthorized shutdown should NOT be persisted")
+	db.QueryRow(ctx, "SELECT count(*) FROM tasks WHERE type = 'unknown_type'").Scan(&count)
+	assert.Equal(t, 0, count, "Unknown message types should NOT be persisted")
 }
