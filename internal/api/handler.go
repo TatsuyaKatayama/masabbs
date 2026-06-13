@@ -34,6 +34,7 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 	api.GET("/health", h.HealthCheck)
 	api.POST("/threads", h.CreateThread)
 	api.GET("/threads", h.GetThreads)
+	api.GET("/threads/:id", h.GetThread)
 	api.GET("/threads/:id/tasks", h.GetThreadTasks)
 	api.DELETE("/threads/:id", h.DeleteThread)
 	api.GET("/agents", h.GetAgents)
@@ -668,6 +669,29 @@ func (h *Handler) GetThreads(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, threads)
+}
+
+func (h *Handler) GetThread(c echo.Context) error {
+	id := c.Param("id")
+	if id == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "thread id is required"})
+	}
+
+	var t models.Thread
+	err := h.DB.QueryRow(c.Request().Context(), `
+		SELECT id, parent_thread_id, created_by_agent, assigned_agent, status, team_id, created_at, updated_at
+		FROM threads
+		WHERE id = $1
+	`, id).Scan(
+		&t.ID, &t.ParentThreadID, &t.CreatedByAgent, &t.AssignedAgent,
+		&t.Status, &t.TeamID, &t.CreatedAt, &t.UpdatedAt,
+	)
+
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "thread not found"})
+	}
+
+	return c.JSON(http.StatusOK, t)
 }
 
 func (h *Handler) GetThreadTasks(c echo.Context) error {
