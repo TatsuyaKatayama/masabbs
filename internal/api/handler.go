@@ -119,6 +119,25 @@ func (h *Handler) CreateThread(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "command and created_by_agent are required"})
 	}
 
+	// Step 4: Permission Check
+	var role string
+	err = h.DB.QueryRow(ctx, "SELECT role FROM agents WHERE id = $1", req.CreatedByAgent).Scan(&role)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "AGENT_NOT_FOUND"})
+	}
+
+	if req.ParentThreadID == nil || *req.ParentThreadID == "" {
+		// Top-level thread
+		if !models.CanCreateTopLevelThread(role) {
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "PERMISSION_DENIED: only TeamManager can create top-level threads"})
+		}
+	} else {
+		// Subthread
+		if !models.CanCreateSubthread(role) {
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "PERMISSION_DENIED: only TeamManager or Chef can create subthreads"})
+		}
+	}
+
 	var threadID string
 	var inputDir string
 	isExisting := false
@@ -289,10 +308,12 @@ func (h *Handler) CreateAgent(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "id, name, and role are required"})
 	}
 
+	role := models.NormalizeRole(req.Role)
+
 	_, err := h.DB.Exec(c.Request().Context(), `
 		INSERT INTO agents (id, name, role, mission, status)
 		VALUES ($1, $2, $3, $4, 'offline')
-	`, req.ID, req.Name, req.Role, req.Mission)
+	`, req.ID, req.Name, role, req.Mission)
 	if err != nil {
 		c.Logger().Errorf("failed to create agent: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create agent"})
@@ -390,7 +411,8 @@ func (h *Handler) UpdateAgent(c echo.Context) error {
 	}
 	if req.Role != nil {
 		query += fmt.Sprintf(", role = $%d", argIdx)
-		args = append(args, *req.Role)
+		role := models.NormalizeRole(*req.Role)
+		args = append(args, role)
 		argIdx++
 	}
 	if req.Mission != nil {

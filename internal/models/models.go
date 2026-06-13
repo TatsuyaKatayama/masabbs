@@ -15,6 +15,42 @@ type Team struct {
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 }
 
+// manager, worker, observer
+const (
+	RoleManager     = "manager"
+	RoleWorker      = "worker"
+	RoleObserver    = "observer"
+	RoleTeamManager = "TeamManager"
+	RoleChef        = "Chef"
+	RoleNewWorker   = "Worker"
+)
+
+// CanCreateTopLevelThread returns true if the role is allowed to create top-level threads.
+func CanCreateTopLevelThread(role string) bool {
+	return role == RoleManager || role == RoleTeamManager
+}
+
+// CanCreateSubthread returns true if the role is allowed to create subthreads.
+func CanCreateSubthread(role string) bool {
+	return role == RoleManager || role == RoleTeamManager || role == RoleChef
+}
+
+// NormalizeRole maps old roles or variations to new canonical roles.
+func NormalizeRole(role string) string {
+	switch role {
+	case "manager", "TEAMMANAGER", "teammanager":
+		return RoleTeamManager
+	case "chef", "CHEF":
+		return RoleChef
+	case "worker", "WORKER", "observer", "OBSERVER":
+		return RoleNewWorker
+	case RoleTeamManager, RoleChef, RoleNewWorker:
+		return role
+	default:
+		return role
+	}
+}
+
 // Agent represents an autonomous participant in the system
 type Agent struct {
 	ID           string          `json:"id" db:"id"`
