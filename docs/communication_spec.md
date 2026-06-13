@@ -211,3 +211,47 @@ message payload では相対 path/prefix を使う。
 - Message Board の team filter は `threads.team_id` を使う
 - backup/restore は Settings 画面で扱う
 - restore はすべて replace であり merge ではない
+
+---
+
+## 11. 改善通信仕様（V3 / Step 0〜7 拡張）
+
+本セクションは、2026-06-09 改善案（Step 0〜7）に基づいて新しく拡張された通信経路、REST API エンドポイント、およびデータ構造を定義する。
+
+### 11.1 新規追加・拡張された REST API 一覧
+
+| Method | Path | 説明 |
+|---|---|---|
+| POST | `/api/v1/threads` | メンション必須のスレッド・サブスレッド作成。作成権限チェック（TeamManager/Chef）を適用 |
+| POST | `/api/v1/threads/:id/messages` | 本文のメンションから `to_agents` を自動解決し、NATS配信代行およびDB保存を行う |
+| POST | `/api/v1/threads/:id/reflection-requests` | 振り返り専用サブスレッドの起立要求を NATS にパブリッシュ |
+| POST | `/api/v1/reflections` | チーム内エージェントへの相互評価の登録・更新（Upsert形式） |
+| GET | `/api/v1/threads/:id/kpi` | 指定スレッド（再帰サブスレッド階層）の活動指標と D3.js 用ネットワークデータを取得 |
+| GET | `/api/v1/teams/:id/kpi` | 指定チーム内の全活動指標と D3.js 用ネットワークデータを取得 |
+
+### 11.2 NATS 配信代行仕様（`post_message` エンドポイント）
+*   エージェントが `POST /api/v1/threads/:id/messages` を叩いた際、サーバーは本文（`message`）から自動的にメンション（`@agent-id`, `@team`）をパブリッシャーとして解決し、NATS の **`board.result.<thread_id>`** トピック宛てに従来の `MessageEnvelope` の形式で代理パブリッシュを行います。
+
+### 11.3 振り返り（Reflection）メッセージング仕様
+*   `POST /api/v1/threads/:id/reflection-requests` 時に自動起立する振り返り用サブスレッド（`reflection_thread_id`）について、サーバーは NATS の **`board.task.<reflection_thread_id>`** トピック宛てに、メンバー全員を `To` 配列にアサインした `task` ペイロードメッセージをパブリッシュします。
+*   各エージェントは通常の仕事と同様に `check_board()` などのポーリング機構により、この振り返りタスクを安全に取得可能です。
+
+### 11.4 KPI / D3.js ネットワーク JSON ペイロード構造
+`GET /api/v1/threads/:id/kpi` および `GET /api/v1/teams/:id/kpi` で返却される `network_data` は、以下の D3.js 適合形式となっており、Admin UI 側でそのまま力学指向グラフのレンダリングに使用されます。
+
+```json
+{
+  "network_data": {
+    "nodes": [
+      { "id": "agent-1", "count": 12 },
+      { "id": "agent-2", "count": 8 }
+    ],
+    "links": [
+      { "source": "agent-1", "target": "agent-2", "value": 5 }
+    ]
+  }
+}
+```
+*   `nodes[].count`: 各エージェントが送信した総メッセージ数（円の大きさにマッピング）
+*   `links[].value`: 該当する発信者から受信者へのメンション回数の総数（矢印線の太さにマッピング）
+

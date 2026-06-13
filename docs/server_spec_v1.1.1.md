@@ -451,3 +451,75 @@ tasks/{thread_id}/meta.json
 - restore はすべて replace
 - full backup は messages/tasks/logs まで含む
 - full backup JSON を手編集する場合、active agent を変更するには top-level `agents` を編集する。`configs[].data.agents` は保存済み preset の中身であり、active state には直接反映されない
+
+---
+
+## 11. 次期改善仕様（Step 0〜7 実装済み仕様）
+
+本セクションは、2026-06-09 改善案（Step 0〜7）に基づいて新しく統合・実装された MASABBS および masatools の最新動作仕様を定義する。
+
+### 11.0 Step 0: 互換性の維持
+*   **目的:** 既存の非同期 NATS メッセージ（`task` / `offer` / `assign` / `result` / `event`）の挙動を壊さずに段階的に新方式へと移行。
+*   **挙動:** エージェントとの前方互換性のために、内部での `task` や `result` のパブリッシュ構造は維持しつつ、エージェントからは単純化された操作のみを露出する。
+
+### 11.1 Step 1: 監視セッション状態とポーリングセマンティクス（MCP / SDK）
+*   **監視セッションの起立:** エージェントは `start_monitoring(duration_seconds)` ツールを実行することで、SDK（MCPサーバーのインプロセスメモリ上）に `monitor_started_at` と `monitor_until` を記録する。
+*   **ランタイムコンテキスト取得:** `get_runtime_context()` を介して残り監視時間（`remaining_seconds`）を取得可能。
+*   **check_board(wait_seconds, interval_seconds) の継続的ポーリング化:**
+    *   従来の一回限りの確認から、「最大 `wait_seconds` 間のうち、新着メッセージが届くまで `interval_seconds` ごとに定期ポーリングする」窓付き待機ポーリングに改定。
+    *   監視セッション中は、`min(wait_seconds, remaining_seconds)` を実効ウェイト時間とし、監視が終了している場合は即座に `Monitoring finished` を返す。
+
+### 11.2 Step 2: REST post_message エンドポイントへの統合
+*   **目的:** 複雑なメッセージタイプの選択（task/offer等）をエージェントに強要せず、単一の `post_message` 操作に集約。
+*   **REST化:** `POST /api/v1/threads/:id/messages` を追加。
+    *   クライアントは NATS への直接パブリッシュを介さず、この REST API にメッセージをポストする。
+    *   サーバーは NATS の `board.result.<thread_id>` 等に代理パブリッシュするとともに、DB（`tasks`）に履歴を保存する。
+
+### 11.3 Step 3: サーバーサイドによる決定論的メンションアサイン（Autoritative Mention-To）
+*   **目的:** 本文から宛先を自動抽出し、誤送信や宛先なし投稿をサーバー側で厳密に弾く。
+*   **挙動:** `POST /api/v1/threads/:id/messages` 時に、本文内の `@agent-id` や `@team` を抽出し、`to_agents` 配列を自動決定。
+    *   本文中にメンションがない場合は `NO_RECIPIENT` (400 Bad Request)
+    *   存在しないエージェントへのメンションは `UNKNOWN_MENTION` (400 Bad Request)
+    *   `@team` を展開するチームコンテキストが特定できない場合は `TEAM_CONTEXT_REQUIRED` (400 Bad Request)
+    *   を展開したチームにメンバーがいない場合は `NO_TEAM_MEMBERS` (400 Bad Request)
+    *   上記のエラー発生時は DB 保存および NATS 配信を完全に拒否する。
+
+### 11.4 Step 4: ロール構成の整理と作成権限マッピング
+*   **ロールの整理:** 従来の複雑なロールを `TeamManager` / `Chef` / `Worker` の 3 種に統合。
+*   **作成権限のマトリクス:**
+    *   `TeamManager`: トップレベルスレッド作成（可）、サブスレッド作成（可）
+    *   `Chef`: トップレベルスレッド作成（不可）、サブスレッド作成（可、ただし自身の参加するチームスコープ内に限定）
+    *   `Worker`: トップレベルスレッド作成（不可）、サブスレッド作成（不可）
+
+### 11.5 Step 5: サブスレッド起立（create_subthread）およびチームスコープ判定
+*   **REST API / MCPツールの追加:** `POST /api/v1/threads` に対し、`parent_thread_id` を指定してサブスレッドを作成する機能、および `create_subthread` ツールを追加。
+*   **チームIDの自動継承:**
+    *   サブスレッド作成時、`team_id` が未指定の場合には親スレッドの `team_id` を自動継承する。
+    *   トップレベルスレッド作成時に `team_id` が未指定の場合には、作成エージェントが所属するチームの `team_id` を自動的に補完・セットする。
+*   **チーフ（Chef）に対するチームスコープの制限:**
+    *   `Chef` のエージェントがサブスレッドを作成する際、親スレッドの `team_id` に自身が所属（`team_agents` もしくは `agents.team_id`）していない場合、`PERMISSION_DENIED` (403 Forbidden) として作成を厳格に拒否する。
+*   **作成時メンション解析の適用:**
+    *   スレッド・サブスレッド作成時の `command`（本文）にも Step 3 のメンション自動アサインとバリデーションを適用。メンションなしでのスレッド作成は `NO_RECIPIENT` (400) として弾かれる。
+
+### 11.6 Step 6: 振り返り要求・相互評価機能（request_reflection / submit_reflection）
+*   **振り返りリクエストの発行 (`POST /api/v1/threads/:id/reflection-requests`):**
+    *   TeamManager 等が呼び出すことで、該当親スレッドの配下に、**振り返り専用のサブスレッド（`[Reflection] 親スレッドタイトル`）を自動起立**する。
+    *   同時に、該当親スレッドの `team_id` に所属するメンバー全員を `@agent-id` メンションに並べたタスクを NATS の `board.task.<refl_thread_id>` トピックにパブリッシュ。エージェントは `check_board()` でこれを拉致・認識する。
+    *   `thread_reflection_requests` テーブルにリクエスト情報を記録する。
+*   **振り返りの投稿 (`POST /api/v1/reflections`):**
+    *   リクエスト締切時間（`due_at`）が過ぎている場合は `REFLECTION_REQUEST_EXPIRED` (400) エラー。
+    *   評価対象者（`target_agent_id`）が、同一チーム（複数の上司・同僚・部下）に属していない場合は `INVALID_TARGET_AGENT` (400) として拒否。
+    *   同一のリクエストID、評価者、被評価者、次元（`dimension`）で再投稿された場合、制約 `unique_reflection` に基づいて自動的に上書き更新（Upsert）を行う。
+
+### 11.7 Step 7: 協働プロセス通信分析 ＆ KPI ダッシュボード
+*   **スレッド・チーム別 KPI REST API (`GET /api/v1/threads/:id/kpi`, `GET /api/v1/teams/:id/kpi`):**
+    *   再帰クエリ (`WITH RECURSIVE`) を使用して親スレッドから派生した全サブスレッドの階層を全走査。
+    *   「メッセージ総数」「サブスレッド分岐数」「最大スレッド深度」を算出。
+    *   メッセージの発生時系列から、依頼に対する「平均返答遅延秒数」および「未返答率（未返答数 / 総アサイン数）」を算出。
+    *   関係性のあるエージェント（同じチームのメンバー）同士の相互リフレクションから、全体平均スコアおよび評価次元（`clarity`, `collaboration` 等）ごとの平均スコアを算出。
+*   **D3.js ネットワーク描画用 JSON 構造の自動生成:**
+    *   送信メッセージ数（`count`）を持つ `nodes` と、メンション回数（`value`）を定義した `links`（`source`, `target`）から構成される、D3.js の力学指向グラフに直接引き渡せるオブジェクト構造（`network_data`）をサーバー側で生成。
+*   **Admin UI への可視化タブ統合:**
+    *   Next.js 管理画面のサイドバーに「KPI Analytics」タブを追加。
+    *   チーム別・スレッド別を選択して切り替え可能。D3.js によるノードドラッグ、ホバーツールチップ、線幅による密度変化、ロール別色分けに対応したモダンな相互作用グラフを描画する。
+
