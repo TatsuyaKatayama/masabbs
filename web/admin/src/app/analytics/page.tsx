@@ -10,10 +10,9 @@ import {
   ThumbsUp, 
   TrendingUp, 
   Layers,
-  ArrowRight,
   TrendingDown
 } from 'lucide-react';
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import * as d3 from 'd3';
 
 interface KPINetworkNode extends d3.SimulationNodeDatum {
@@ -92,7 +91,9 @@ export default function AnalyticsPage() {
   // Set default selected thread
   useEffect(() => {
     if (threads.length > 0 && !selectedThreadId) {
-      setSelectedThreadId(threads[0].id);
+      Promise.resolve().then(() => {
+        setSelectedThreadId(threads[0].id);
+      });
     }
   }, [threads, selectedThreadId]);
 
@@ -109,8 +110,11 @@ export default function AnalyticsPage() {
       return;
     }
 
-    setIsLoading(true);
-    setError(null);
+    Promise.resolve().then(() => {
+      setIsLoading(true);
+      setError(null);
+    });
+
     fetch(url)
       .then(async (res) => {
         if (!res.ok) {
