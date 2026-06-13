@@ -126,15 +126,61 @@ func (h *Handler) CreateThread(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "AGENT_NOT_FOUND"})
 	}
 
+	normalizedRole := models.NormalizeRole(role)
+
+	var teamID *string
+	if req.TeamID != nil && *req.TeamID != "" {
+		teamID = req.TeamID
+	}
+
 	if req.ParentThreadID == nil || *req.ParentThreadID == "" {
 		// Top-level thread
-		if !models.CanCreateTopLevelThread(role) {
+		if !models.CanCreateTopLevelThread(normalizedRole) {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "PERMISSION_DENIED: only TeamManager can create top-level threads"})
+		}
+		// If TeamID is not explicitly provided, fetch the creator agent's team_id
+		if teamID == nil {
+			var agentTeamID *string
+			err = h.DB.QueryRow(ctx, "SELECT team_id FROM agents WHERE id = $1", req.CreatedByAgent).Scan(&agentTeamID)
+			if err == nil && agentTeamID != nil && *agentTeamID != "" {
+				teamID = agentTeamID
+			}
 		}
 	} else {
 		// Subthread
-		if !models.CanCreateSubthread(role) {
+		if !models.CanCreateSubthread(normalizedRole) {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "PERMISSION_DENIED: only TeamManager or Chef can create subthreads"})
+		}
+
+		// Inherit parent's team_id if not explicitly provided
+		var parentTeamID *string
+		err = h.DB.QueryRow(ctx, "SELECT team_id FROM threads WHERE id = $1", *req.ParentThreadID).Scan(&parentTeamID)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "PARENT_THREAD_NOT_FOUND"})
+		}
+		if teamID == nil {
+			teamID = parentTeamID
+		}
+
+		// Chef-specific validation: must be a member of the parent thread's team
+		if normalizedRole == models.RoleChef {
+			if teamID == nil {
+				return c.JSON(http.StatusForbidden, map[string]string{"error": "PERMISSION_DENIED: parent thread is not associated with any team"})
+			}
+			var belongs bool
+			err = h.DB.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM team_agents WHERE team_id = $1 AND agent_id = $2
+					UNION
+					SELECT 1 FROM agents WHERE id = $2 AND team_id = $1
+				)
+			`, *teamID, req.CreatedByAgent).Scan(&belongs)
+			if err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to check chef team membership"})
+			}
+			if !belongs {
+				return c.JSON(http.StatusForbidden, map[string]string{"error": "PERMISSION_DENIED: Chef is not a member of the parent thread's team"})
+			}
 		}
 	}
 
@@ -171,12 +217,22 @@ func (h *Handler) CreateThread(c echo.Context) error {
 		_, err = h.DB.Exec(ctx, `
 			INSERT INTO threads (id, parent_thread_id, created_by_agent, status, team_id)
 			VALUES ($1, $2, $3, 'open', $4)
-		`, threadID, req.ParentThreadID, req.CreatedByAgent, req.TeamID)
+		`, threadID, req.ParentThreadID, req.CreatedByAgent, teamID)
 		if err != nil {
 			c.Logger().Errorf("failed to insert thread: %v", err)
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database record creation failed"})
 		}
 	}
+
+	// Resolve mentions authoritative
+	resolveRes := h.Resolver.Resolve(ctx, req.Command, threadID, req.CreatedByAgent)
+	if resolveRes.ErrorCode != "" {
+		if !isExisting {
+			h.DB.Exec(ctx, "DELETE FROM threads WHERE id = $1", threadID)
+		}
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": resolveRes.ErrorCode})
+	}
+	req.To = resolveRes.ToAgents
 
 	// 4. Publish to NATS
 	taskPayload := models.TaskPayload{
@@ -800,7 +856,7 @@ func (h *Handler) PostMessage(c echo.Context) error {
 	subject := fmt.Sprintf("board.result.%s", threadID)
 	if _, err := h.NATS.JS.Publish(ctx, subject, envelopeBytes); err != nil {
 		c.Logger().Errorf("failed to publish to nats: %v", err)
-		// We return 500 because DB is already updated but NATS failed. 
+		// We return 500 because DB is already updated but NATS failed.
 		// In a real system, we'd want this to be atomic or use outbox.
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "messaging error"})
 	}

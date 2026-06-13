@@ -102,7 +102,7 @@ func main() {
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Use(middleware.BodyLimit("100M"))
-	
+
 	// TODO: Restrict AllowOrigins before production
 	e.Use(middleware.CORS())
 
@@ -133,7 +133,7 @@ func main() {
 	log.Println("Shutting down server...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	
+
 	if err := e.Shutdown(shutdownCtx); err != nil {
 		e.Logger.Fatal(err)
 	}

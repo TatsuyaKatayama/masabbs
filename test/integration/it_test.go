@@ -1,8 +1,8 @@
 package integration
 
 import (
-	"fmt"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,11 +14,11 @@ import (
 	"github.com/TatsuyaKatayama/masabbs/internal/api"
 	"github.com/TatsuyaKatayama/masabbs/internal/nats"
 	"github.com/TatsuyaKatayama/masabbs/internal/worker"
-	testnats "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
+	testnats "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -145,7 +145,7 @@ func TestIntegration_IT001_CorruptedMessage(t *testing.T) {
 	var count int
 	err = db.QueryRow(ctx, "SELECT count(*) FROM tasks").Scan(&count)
 	require.NoError(t, err)
-	
+
 	// Should not have persisted anything due to unmarshal error
 	assert.Equal(t, 0, count)
 }
@@ -182,7 +182,7 @@ func TestIntegration_IT002_DuplicateMessages(t *testing.T) {
 	var count int
 	err = db.QueryRow(ctx, "SELECT count(*) FROM tasks WHERE thread_id = $1 AND type = 'result'", threadID).Scan(&count)
 	require.NoError(t, err)
-	
+
 	// Phase 3 adds idempotency check for 'result' type.
 	// Rapidly published duplicates should now be dropped, resulting in count 1.
 	assert.Equal(t, 1, count, "Archiver should record only the first result message (Idempotency)")
@@ -209,8 +209,8 @@ func TestIntegration_IT003_DelayedMessageState(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	// Delayed 'assign' message arrives for a thread that is already 'done'
-	delayedAssignJSON := fmt.Sprintf(`{"type":"assign", "thread_id":"%s", "from":"agent-1", "to":["agent-2"], "timestamp":%d, "payload":{}}`, threadID, time.Now().Unix() - 3600)
-	
+	delayedAssignJSON := fmt.Sprintf(`{"type":"assign", "thread_id":"%s", "from":"agent-1", "to":["agent-2"], "timestamp":%d, "payload":{}}`, threadID, time.Now().Unix()-3600)
+
 	_, err = nc.JS.Publish(ctx, "board.assign."+threadID, []byte(delayedAssignJSON))
 	require.NoError(t, err)
 
@@ -286,7 +286,7 @@ func TestIntegration_IT005_JetStreamAckRetry(t *testing.T) {
 	require.NoError(t, err)
 
 	msgChan := make(chan jetstream.Msg, 5)
-	
+
 	ccCtx, err := consumer.Consume(func(msg jetstream.Msg) {
 		msgChan <- msg
 		// INTENTIONALLY NOT ACKING
@@ -311,7 +311,7 @@ func TestIntegration_IT005_JetStreamAckRetry(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Did not receive retried message")
 	}
-	
+
 	assert.True(t, true, "Message was successfully retried due to missing ACK")
 }
 
@@ -350,7 +350,7 @@ func TestIntegration_IT006_WebSocketReconnectionRestoration(t *testing.T) {
 	// 1. 初回接続
 	conn1, _, err := dialer.Dial(wsURL, nil)
 	require.NoError(t, err)
-	
+
 	// 2. 切断
 	conn1.Close()
 	time.Sleep(1 * time.Second) // Hub側でのアンレジストを待機
@@ -359,7 +359,7 @@ func TestIntegration_IT006_WebSocketReconnectionRestoration(t *testing.T) {
 	testMsg := []byte(`{"type":"event", "from":"agent-1", "payload":"missed while offline"}`)
 	_, err = nc.JS.Publish(ctx, "board.event.test", testMsg)
 	require.NoError(t, err)
-	
+
 	// アーカイバーがDBに書き込む時間を待機
 	time.Sleep(2 * time.Second)
 
@@ -423,10 +423,10 @@ func TestIntegration_IT007_PingPongTimeout(t *testing.T) {
 	// We will assert that the connection is initially established, but we won't wait 60s.
 	// Alternatively, we could override pongWait for tests, but standard practice allows us
 	// to manually test timeout behaviour by closing the underlying TCP conn and seeing hub unregister it.
-	
+
 	conn.UnderlyingConn().Close() // Simulate network drop
 
-	// Try to connect again with same ID. 
+	// Try to connect again with same ID.
 	// We use a retry loop because unregistering the previous connection might take a moment.
 	var conn2 *websocket.Conn
 	var resp2 *http.Response
@@ -440,6 +440,6 @@ func TestIntegration_IT007_PingPongTimeout(t *testing.T) {
 
 	require.NoError(t, err, "Should eventually succeed in reconnecting")
 	require.Equal(t, http.StatusSwitchingProtocols, resp2.StatusCode)
-	
+
 	conn2.Close()
 }

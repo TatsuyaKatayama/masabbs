@@ -20,7 +20,7 @@ type Guardian struct {
 
 	// Stats for rate limiting: agentID -> []timestamps
 	stats map[string][]time.Time
-	
+
 	// Track consecutive violations of strict limit (5 msg/s)
 	strictViolations map[string]int
 	lastViolationSec map[string]int64
@@ -81,7 +81,7 @@ func (g *Guardian) checkRateLimit(agentID string) {
 	var recent []time.Time
 	oneMinAgo := now.Add(-1 * time.Minute)
 	oneSecAgo := now.Add(-1 * time.Second)
-	
+
 	msgCountLastMin := 0
 	msgCountLastSec := 0
 
@@ -152,7 +152,7 @@ func (g *Guardian) checkLoopDetection(ctx context.Context, threadID string, agen
 	// we consider it a likely infinite loop / circular dependency (a->b->c->a->...).
 	if g.threadHistory[threadID][agentID] > 2 {
 		log.Printf("Guardian: Loop detected in thread %s involving agent %s. Marking thread as error.", threadID, agentID)
-		
+
 		if g.DB != nil {
 			// Do not block the mutex while querying DB
 			go func(tid string) {
@@ -164,7 +164,7 @@ func (g *Guardian) checkLoopDetection(ctx context.Context, threadID string, agen
 				}
 			}(threadID)
 		}
-		
+
 		// Reset history so we don't spam DB updates
 		delete(g.threadHistory, threadID)
 	}

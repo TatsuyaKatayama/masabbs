@@ -14,7 +14,7 @@ import (
 func TestExtractMentions(t *testing.T) {
 	text := "Hello @agent-1 and @team. @agent-1 again."
 	res := ExtractMentions(text)
-	
+
 	assert.Contains(t, res, "agent-1")
 	assert.Contains(t, res, "team")
 	assert.Equal(t, 2, len(res))

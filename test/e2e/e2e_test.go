@@ -157,20 +157,20 @@ func TestE2E_NORMAL_001_1to1Task(t *testing.T) {
 			for msg := range msgs.Messages() {
 				var env models.MessageEnvelope
 				json.Unmarshal(msg.Data(), &env)
-				
+
 				// Simulate status update
 				db.Exec(context.Background(), "UPDATE threads SET status = 'processing', assigned_agent = 'agent-b' WHERE id = $1", *env.ThreadID)
-				
-				msg.InProgress() 
+
+				msg.InProgress()
 				time.Sleep(1 * time.Second)
 
 				payload, _ := json.Marshal(models.ResultPayload{OutputDir: "out/", ExitCode: 0})
 				resEnv := models.MessageEnvelope{
 					Type: "result", ThreadID: env.ThreadID, From: "agent-b", Timestamp: time.Now().Unix(), Payload: payload,
 				}
-				
+
 				signAndPublish(t, nc, authProvider, creds["agent-b"], resEnv, "board.result."+*env.ThreadID)
-				
+
 				db.Exec(context.Background(), "UPDATE threads SET status = 'done' WHERE id = $1", *env.ThreadID)
 				msg.Ack()
 				return
@@ -183,7 +183,7 @@ func TestE2E_NORMAL_001_1to1Task(t *testing.T) {
 	taskEnv := models.MessageEnvelope{
 		Type: "task", ThreadID: &threadID, From: "agent-a", Timestamp: time.Now().Unix(), Payload: payload,
 	}
-	
+
 	signAndPublish(t, nc, authProvider, creds["agent-a"], taskEnv, "board.task."+threadID)
 
 	time.Sleep(3 * time.Second)
@@ -257,7 +257,7 @@ func TestE2E_NORMAL_002_BroadcastAndAggregation(t *testing.T) {
 				for msg := range msgs.Messages() {
 					var env models.MessageEnvelope
 					json.Unmarshal(msg.Data(), &env)
-					
+
 					// Only respond if targeted in to_agents (broadcast includes them)
 					isTargeted := false
 					for _, to := range env.To {
@@ -411,7 +411,7 @@ func TestE2E_NORMAL_005_TaskWithToAndCC(t *testing.T) {
 	api.RegisterRoutes(e, db, nc, &MockStorage{}, hub, authProvider)
 
 	reqBody := map[string]interface{}{
-		"command":          "Test To and CC",
+		"command":          "Test To and CC @agent-b @agent-c",
 		"created_by_agent": "agent-a",
 		"to":               []string{"agent-b", "agent-c"},
 		"observers":        []string{"agent-o"},
@@ -429,7 +429,9 @@ func TestE2E_NORMAL_005_TaskWithToAndCC(t *testing.T) {
 	select {
 	case env := <-receivedMsg:
 		assert.Equal(t, "task", env.Type)
-		assert.Equal(t, []string{"agent-b", "agent-c"}, env.To)
+		assert.Contains(t, env.To, "agent-b")
+		assert.Contains(t, env.To, "agent-c")
+		assert.Len(t, env.To, 2)
 		assert.Equal(t, []string{"agent-o"}, env.Observers)
 		assert.Equal(t, "agent-a", env.From)
 	case <-time.After(3 * time.Second):

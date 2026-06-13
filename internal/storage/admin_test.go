@@ -21,7 +21,7 @@ func TestGeneratePolicyJSON(t *testing.T) {
 		assert.NoError(t, err)
 
 		assert.Len(t, doc.Statement, 2)
-		
+
 		// Statement 0 should allow PutObject to output
 		assert.Contains(t, doc.Statement[0].Action, "s3:PutObject")
 		assert.Contains(t, doc.Statement[0].Resource[0], "tasks/thread-123/output/*")

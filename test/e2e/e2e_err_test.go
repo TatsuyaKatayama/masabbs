@@ -21,8 +21,8 @@ func TestE2E_ERR_007_InfiniteLoopDetection(t *testing.T) {
 
 	// サーバー側のコンポーネントを手動で起動
 	archiver := &worker.Archiver{
-		DB: db,
-		JS: nc.JS,
+		DB:   db,
+		JS:   nc.JS,
 		Auth: authProvider,
 	}
 	go archiver.Start(ctx)
@@ -35,7 +35,7 @@ func TestE2E_ERR_007_InfiniteLoopDetection(t *testing.T) {
 	go guardian.Start(ctx)
 
 	threadID := "01HGWY5X9A7Z4K2M3Q8P6R0V1E"
-	
+
 	// 1. Threadを登録
 	_, err := db.Exec(ctx, "INSERT INTO threads (id, created_by_agent, status) VALUES ($1, 'agent-a', 'open')", threadID)
 	require.NoError(t, err)
@@ -108,7 +108,7 @@ func TestE2E_ERR_003_InvalidThreadID(t *testing.T) {
 	env := models.MessageEnvelope{
 		Type: "result", ThreadID: &threadID, From: "agent-b", Timestamp: time.Now().Unix(), Payload: payload,
 	}
-	
+
 	signAndPublish(t, nc, authProvider, creds["agent-b"], env, "board.result."+threadID)
 
 	time.Sleep(2 * time.Second)
@@ -135,7 +135,7 @@ func TestE2E_ERR_004_Idempotency(t *testing.T) {
 	env := models.MessageEnvelope{
 		Type: "result", ThreadID: &threadID, From: "agent-b", Timestamp: time.Now().Unix(), Payload: payload,
 	}
-	
+
 	// 同じ結果を2回送信
 	signAndPublish(t, nc, authProvider, creds["agent-b"], env, "board.result."+threadID)
 	time.Sleep(500 * time.Millisecond)
@@ -166,7 +166,7 @@ func TestE2E_ERR_006_LateMessage(t *testing.T) {
 	env := models.MessageEnvelope{
 		Type: "result", ThreadID: &threadID, From: "agent-b", Timestamp: time.Now().Unix(), Payload: payload,
 	}
-	
+
 	signAndPublish(t, nc, authProvider, creds["agent-b"], env, "board.result."+threadID)
 
 	time.Sleep(2 * time.Second)
@@ -195,7 +195,7 @@ func TestE2E_ERR_005_DuplicateAssignment(t *testing.T) {
 	env := models.MessageEnvelope{
 		Type: "assign", ThreadID: &threadID, From: "agent-a", To: []string{"agent-c"}, Timestamp: time.Now().Unix(), Payload: payload,
 	}
-	
+
 	signAndPublish(t, nc, authProvider, creds["agent-a"], env, "board.assign."+threadID)
 
 	time.Sleep(2 * time.Second)

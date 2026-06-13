@@ -116,7 +116,7 @@ func (c *AdminClient) RemoveThreadPolicy(ctx context.Context, threadID, agentID 
 	policyName := fmt.Sprintf("policy-%s-%s", threadID, agentID)
 
 	// 1. Detach policy from user by setting an empty policy (or just deleting the policy name from user)
-	// In MinIO, removing the canned policy will effectively detach it, 
+	// In MinIO, removing the canned policy will effectively detach it,
 	// but it's cleaner to explicitly clear it if needed.
 	err := c.MAdmin.SetPolicy(ctx, "", agentID, false)
 	if err != nil {

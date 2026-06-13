@@ -63,7 +63,7 @@ func (r *Resolver) Resolve(ctx context.Context, message string, threadID string,
 	}
 
 	resolvedIDs := make(map[string]bool)
-	
+
 	// 1. Resolve @team if present
 	if hasTeam {
 		// Get team_id for the thread
