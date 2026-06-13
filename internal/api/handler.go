@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -43,6 +44,8 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 	api.DELETE("/threads/:id", h.DeleteThread)
 	api.POST("/threads/:id/reflection-requests", h.RequestReflection)
 	api.POST("/reflections", h.SubmitReflection)
+	api.GET("/threads/:id/kpi", h.GetThreadKPI)
+	api.GET("/teams/:id/kpi", h.GetTeamKPI)
 	api.GET("/agents", h.GetAgents)
 	api.POST("/agents", h.CreateAgent)
 	api.GET("/agents/:id", h.GetAgent)
@@ -1413,4 +1416,365 @@ func (h *Handler) SubmitReflection(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusCreated, map[string]string{"id": reflectionID})
+}
+
+type KPIMessageStats struct {
+	TotalMessages  int            `json:"total_messages"`
+	SentCounts     map[string]int `json:"sent_counts"`
+	ReceivedCounts map[string]int `json:"received_counts"`
+}
+
+type KPIReplyMetrics struct {
+	AverageReplyDelaySeconds float64 `json:"average_reply_delay_seconds"`
+	UnrepliedCount           int     `json:"unreplied_count"`
+	UnrepliedRate            float64 `json:"unreplied_rate"`
+}
+
+type KPIReflectionStats struct {
+	AverageScore float64            `json:"average_score"`
+	ByDimension  map[string]float64 `json:"by_dimension"`
+}
+
+type KPINetworkNode struct {
+	ID    string `json:"id"`
+	Count int    `json:"count"`
+}
+
+type KPINetworkLink struct {
+	Source string `json:"source"`
+	Target string `json:"target"`
+	Value  int    `json:"value"`
+}
+
+type KPINetworkData struct {
+	Nodes []KPINetworkNode `json:"nodes"`
+	Links []KPINetworkLink `json:"links"`
+}
+
+type ThreadKPIResponse struct {
+	ThreadID        string             `json:"thread_id"`
+	SubthreadCount  int                `json:"subthread_count"`
+	MaxDepth        int                `json:"max_depth"`
+	MessageStats    KPIMessageStats    `json:"message_stats"`
+	ReplyMetrics    KPIReplyMetrics    `json:"reply_metrics"`
+	ReflectionStats KPIReflectionStats `json:"reflection_stats"`
+	NetworkData     KPINetworkData     `json:"network_data"`
+}
+
+type TeamKPIResponse struct {
+	TeamID            string             `json:"team_id"`
+	TotalThreads      int                `json:"total_threads"`
+	TotalSubthreads   int                `json:"total_subthreads"`
+	MaxSubthreadDepth int                `json:"max_subthread_depth"`
+	MessageStats      KPIMessageStats    `json:"message_stats"`
+	ReplyMetrics      KPIReplyMetrics    `json:"reply_metrics"`
+	ReflectionStats   KPIReflectionStats `json:"reflection_stats"`
+	NetworkData       KPINetworkData     `json:"network_data"`
+}
+
+func (h *Handler) calculateKPIForThreads(ctx context.Context, threadIDs []string) (KPIMessageStats, KPIReplyMetrics, KPIReflectionStats, KPINetworkData, error) {
+	msgStats := KPIMessageStats{
+		SentCounts:     make(map[string]int),
+		ReceivedCounts: make(map[string]int),
+	}
+	replyMetrics := KPIReplyMetrics{}
+	reflStats := KPIReflectionStats{
+		ByDimension: make(map[string]float64),
+	}
+	networkData := KPINetworkData{}
+
+	if len(threadIDs) == 0 {
+		return msgStats, replyMetrics, reflStats, networkData, nil
+	}
+
+	// 1. Fetch tasks
+	rows, err := h.DB.Query(ctx, `
+		SELECT id, thread_id, agent_id, type, to_agents, observers, created_at 
+		FROM tasks 
+		WHERE thread_id = ANY($1) 
+		ORDER BY created_at ASC
+	`, threadIDs)
+	if err != nil {
+		return msgStats, replyMetrics, reflStats, networkData, err
+	}
+	defer rows.Close()
+
+	type taskRow struct {
+		ID        string
+		ThreadID  string
+		AgentID   string
+		Type      string
+		ToAgents  []string
+		Observers []string
+		CreatedAt time.Time
+	}
+
+	var tasks []taskRow
+	for rows.Next() {
+		var tr taskRow
+		if err := rows.Scan(&tr.ID, &tr.ThreadID, &tr.AgentID, &tr.Type, &tr.ToAgents, &tr.Observers, &tr.CreatedAt); err == nil {
+			tasks = append(tasks, tr)
+		}
+	}
+
+	msgStats.TotalMessages = len(tasks)
+
+	// Interaction link map (Source -> Target -> count)
+	interactions := make(map[string]map[string]int)
+
+	type pendingKey struct {
+		ThreadID string
+		AgentID  string
+	}
+	pendingReplies := make(map[pendingKey]time.Time)
+	var totalDelay time.Duration
+	var replyCount int
+	var totalRequests int
+
+	for _, t := range tasks {
+		// Update sent count
+		msgStats.SentCounts[t.AgentID]++
+
+		// Initialize inner interaction map if not exists
+		if _, ok := interactions[t.AgentID]; !ok {
+			interactions[t.AgentID] = make(map[string]int)
+		}
+
+		// Update received count and links
+		for _, to := range t.ToAgents {
+			if to != "" {
+				msgStats.ReceivedCounts[to]++
+				interactions[t.AgentID][to]++
+			}
+		}
+
+		// Update reply latencies and unreplied requests
+		pkey := pendingKey{ThreadID: t.ThreadID, AgentID: t.AgentID}
+		if sentTime, ok := pendingReplies[pkey]; ok {
+			totalDelay += t.CreatedAt.Sub(sentTime)
+			replyCount++
+			delete(pendingReplies, pkey)
+		}
+
+		if len(t.ToAgents) > 0 {
+			for _, to := range t.ToAgents {
+				if to != "" && to != t.AgentID {
+					p := pendingKey{ThreadID: t.ThreadID, AgentID: to}
+					pendingReplies[p] = t.CreatedAt
+					totalRequests++
+				}
+			}
+		}
+	}
+
+	if replyCount > 0 {
+		replyMetrics.AverageReplyDelaySeconds = totalDelay.Seconds() / float64(replyCount)
+	}
+	replyMetrics.UnrepliedCount = len(pendingReplies)
+	if totalRequests > 0 {
+		replyMetrics.UnrepliedRate = float64(replyMetrics.UnrepliedCount) / float64(totalRequests)
+	}
+
+	// 2. Fetch Reflections
+	refRows, err := h.DB.Query(ctx, `
+		SELECT dimension, score 
+		FROM thread_reflections 
+		WHERE thread_id = ANY($1)
+	`, threadIDs)
+	if err == nil {
+		defer refRows.Close()
+		var totalScore int
+		var refCount int
+		dimScores := make(map[string]float64)
+		dimCounts := make(map[string]int)
+
+		for refRows.Next() {
+			var dim string
+			var score int
+			if err := refRows.Scan(&dim, &score); err == nil {
+				totalScore += score
+				refCount++
+				dimScores[dim] += float64(score)
+				dimCounts[dim]++
+			}
+		}
+
+		if refCount > 0 {
+			reflStats.AverageScore = float64(totalScore) / float64(refCount)
+			for dim, sum := range dimScores {
+				reflStats.ByDimension[dim] = sum / float64(dimCounts[dim])
+			}
+		}
+	}
+
+	// 3. Build Nodes and Links for D3.js Network Data
+	nodeSet := make(map[string]bool)
+	for src, inner := range interactions {
+		nodeSet[src] = true
+		for tgt := range inner {
+			nodeSet[tgt] = true
+		}
+	}
+
+	for agentID := range nodeSet {
+		networkData.Nodes = append(networkData.Nodes, KPINetworkNode{
+			ID:    agentID,
+			Count: msgStats.SentCounts[agentID],
+		})
+	}
+
+	for src, inner := range interactions {
+		for tgt, val := range inner {
+			networkData.Links = append(networkData.Links, KPINetworkLink{
+				Source: src,
+				Target: tgt,
+				Value:  val,
+			})
+		}
+	}
+
+	return msgStats, replyMetrics, reflStats, networkData, nil
+}
+
+func (h *Handler) GetThreadKPI(c echo.Context) error {
+	ctx := c.Request().Context()
+	threadID := c.Param("id")
+
+	// 1. Fetch thread details to make sure it exists
+	var exists bool
+	err := h.DB.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM threads WHERE id = $1)", threadID).Scan(&exists)
+	if err != nil || !exists {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "THREAD_NOT_FOUND"})
+	}
+
+	// 2. Query all subthreads recursively using PostgreSQL WITH RECURSIVE
+	rows, err := h.DB.Query(ctx, `
+		WITH RECURSIVE subthreads AS (
+			SELECT id, parent_thread_id, 0 AS depth FROM threads WHERE id = $1
+			UNION ALL
+			SELECT t.id, t.parent_thread_id, s.depth + 1 FROM threads t
+			INNER JOIN subthreads s ON t.parent_thread_id = s.id
+		)
+		SELECT id, depth FROM subthreads
+	`, threadID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to query subthreads"})
+	}
+	defer rows.Close()
+
+	var threadIDs []string
+	subthreadCount := -1 // exclude self
+	maxDepth := 0
+	for rows.Next() {
+		var id string
+		var depth int
+		if err := rows.Scan(&id, &depth); err == nil {
+			threadIDs = append(threadIDs, id)
+			subthreadCount++
+			if depth > maxDepth {
+				maxDepth = depth
+			}
+		}
+	}
+
+	if subthreadCount < 0 {
+		subthreadCount = 0
+	}
+
+	msgStats, replyMetrics, reflStats, networkData, err := h.calculateKPIForThreads(ctx, threadIDs)
+	if err != nil {
+		c.Logger().Errorf("failed to calculate KPI: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to calculate KPI"})
+	}
+
+	return c.JSON(http.StatusOK, ThreadKPIResponse{
+		ThreadID:        threadID,
+		SubthreadCount:  subthreadCount,
+		MaxDepth:        maxDepth,
+		MessageStats:    msgStats,
+		ReplyMetrics:    replyMetrics,
+		ReflectionStats: reflStats,
+		NetworkData:     networkData,
+	})
+}
+
+func (h *Handler) GetTeamKPI(c echo.Context) error {
+	ctx := c.Request().Context()
+	teamID := c.Param("id")
+
+	// 1. Verify team exists
+	var exists bool
+	err := h.DB.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM teams WHERE id = $1)", teamID).Scan(&exists)
+	if err != nil || !exists {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "TEAM_NOT_FOUND"})
+	}
+
+	// 2. Fetch all root threads belonging to this team
+	rows, err := h.DB.Query(ctx, "SELECT id FROM threads WHERE team_id = $1 AND (parent_thread_id IS NULL OR parent_thread_id = '')", teamID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to query team threads"})
+	}
+	defer rows.Close()
+
+	var rootThreadIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			rootThreadIDs = append(rootThreadIDs, id)
+		}
+	}
+
+	totalThreads := len(rootThreadIDs)
+	totalSubthreads := 0
+	maxSubthreadDepth := 0
+
+	var allThreadIDs []string
+
+	// For each root thread, recursively find its child threads
+	for _, rid := range rootThreadIDs {
+		subRows, err := h.DB.Query(ctx, `
+			WITH RECURSIVE subthreads AS (
+				SELECT id, parent_thread_id, 0 AS depth FROM threads WHERE id = $1
+				UNION ALL
+				SELECT t.id, t.parent_thread_id, s.depth + 1 FROM threads t
+				INNER JOIN subthreads s ON t.parent_thread_id = s.id
+			)
+			SELECT id, depth FROM subthreads
+		`, rid)
+		if err != nil {
+			continue
+		}
+		defer subRows.Close()
+
+		for subRows.Next() {
+			var id string
+			var depth int
+			if err := subRows.Scan(&id, &depth); err == nil {
+				allThreadIDs = append(allThreadIDs, id)
+				if depth > 0 {
+					totalSubthreads++
+				}
+				if depth > maxSubthreadDepth {
+					maxSubthreadDepth = depth
+				}
+			}
+		}
+	}
+
+	msgStats, replyMetrics, reflStats, networkData, err := h.calculateKPIForThreads(ctx, allThreadIDs)
+	if err != nil {
+		c.Logger().Errorf("failed to calculate team KPI: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to calculate KPI"})
+	}
+
+	return c.JSON(http.StatusOK, TeamKPIResponse{
+		TeamID:            teamID,
+		TotalThreads:      totalThreads,
+		TotalSubthreads:   totalSubthreads,
+		MaxSubthreadDepth: maxSubthreadDepth,
+		MessageStats:      msgStats,
+		ReplyMetrics:      replyMetrics,
+		ReflectionStats:   reflStats,
+		NetworkData:       networkData,
+	})
 }

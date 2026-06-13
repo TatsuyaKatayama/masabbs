@@ -8,7 +8,8 @@ import {
   MessageSquare, 
   PlayCircle, 
   Settings,
-  Map
+  Map,
+  BarChart3
 } from 'lucide-react';
 
 const navigation = [
@@ -16,6 +17,7 @@ const navigation = [
   { name: 'Org Tree', href: '/org', icon: Network },
   { name: 'Overview', href: '/overview', icon: Map },
   { name: 'Message Board', href: '/board', icon: MessageSquare },
+  { name: 'KPI Analytics', href: '/analytics', icon: BarChart3 },
   { name: 'Operations', href: '/operations', icon: PlayCircle },
 ];
 
