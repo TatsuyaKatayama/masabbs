@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/TatsuyaKatayama/masabbs/internal/auth"
+	"github.com/TatsuyaKatayama/masabbs/internal/mentions"
 	"github.com/TatsuyaKatayama/masabbs/internal/models"
 	"github.com/TatsuyaKatayama/masabbs/internal/nats"
 	"github.com/TatsuyaKatayama/masabbs/internal/storage"
@@ -20,6 +21,7 @@ type Handler struct {
 	NATS         *nats.Client
 	Storage      storage.StorageProvider
 	AuthProvider *auth.Provider
+	Resolver     *mentions.Resolver
 }
 
 // RegisterRoutes sets up all API endpoints
@@ -29,12 +31,14 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 		NATS:         nc,
 		Storage:      sc,
 		AuthProvider: authProvider,
+		Resolver:     mentions.NewResolver(db),
 	}
 	api := e.Group("/api/v1")
 	api.GET("/health", h.HealthCheck)
 	api.POST("/threads", h.CreateThread)
 	api.GET("/threads", h.GetThreads)
 	api.GET("/threads/:id", h.GetThread)
+	api.POST("/threads/:id/messages", h.PostMessage)
 	api.GET("/threads/:id/tasks", h.GetThreadTasks)
 	api.DELETE("/threads/:id", h.DeleteThread)
 	api.GET("/agents", h.GetAgents)
@@ -93,6 +97,14 @@ type CreateThreadRequest struct {
 type CreateThreadResponse struct {
 	ThreadID string `json:"thread_id"`
 	InputDir string `json:"input_dir"`
+}
+
+type PostMessageRequest struct {
+	FromAgent string                 `json:"from_agent"`
+	Message   string                 `json:"message"`
+	OutputDir string                 `json:"output_dir,omitempty"`
+	Error     string                 `json:"error,omitempty"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
 }
 
 func (h *Handler) CreateThread(c echo.Context) error {
@@ -692,6 +704,86 @@ func (h *Handler) GetThread(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, t)
+}
+
+func (h *Handler) PostMessage(c echo.Context) error {
+	ctx := c.Request().Context()
+	threadID := c.Param("id")
+	var req PostMessageRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request format"})
+	}
+
+	if req.FromAgent == "" || req.Message == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "from_agent and message are required"})
+	}
+
+	// 1. Verify agent exists
+	var exists bool
+	err := h.DB.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM agents WHERE id = $1)", req.FromAgent).Scan(&exists)
+	if err != nil || !exists {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "AGENT_NOT_FOUND"})
+	}
+
+	// 2. Fetch thread and check status
+	var status string
+	err = h.DB.QueryRow(ctx, "SELECT status FROM threads WHERE id = $1", threadID).Scan(&status)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "THREAD_NOT_FOUND"})
+	}
+
+	if status == "done" || status == "error" {
+		return c.JSON(http.StatusConflict, map[string]string{"error": "THREAD_CLOSED"})
+	}
+
+	// 3. Resolve mentions authoritative
+	resolveRes := h.Resolver.Resolve(ctx, req.Message, threadID, req.FromAgent)
+	if resolveRes.ErrorCode != "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": resolveRes.ErrorCode})
+	}
+
+	// 4. Save to DB (tasks table)
+	taskID := ulid.Make().String()
+	payload := models.ResultPayload{
+		OutputDir: req.OutputDir,
+		Message:   req.Message,
+		Error:     req.Error,
+		ExitCode:  0, // Default for conversation messages
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	_, err = h.DB.Exec(ctx, `
+		INSERT INTO tasks (id, thread_id, agent_id, type, to_agents, payload)
+		VALUES ($1, $2, $3, 'result', $4, $5)
+	`, taskID, threadID, req.FromAgent, resolveRes.ToAgents, payloadBytes)
+	if err != nil {
+		c.Logger().Errorf("failed to insert task: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+	}
+
+	// 5. Update thread updated_at
+	h.DB.Exec(ctx, "UPDATE threads SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", threadID)
+
+	// 6. Publish to NATS
+	envelope := models.MessageEnvelope{
+		ID:        taskID,
+		Type:      "result",
+		ThreadID:  &threadID,
+		From:      req.FromAgent,
+		To:        resolveRes.ToAgents,
+		Timestamp: time.Now().Unix(),
+		Payload:   payloadBytes,
+	}
+	envelopeBytes, _ := json.Marshal(envelope)
+	subject := fmt.Sprintf("board.result.%s", threadID)
+	if _, err := h.NATS.JS.Publish(ctx, subject, envelopeBytes); err != nil {
+		c.Logger().Errorf("failed to publish to nats: %v", err)
+		// We return 500 because DB is already updated but NATS failed. 
+		// In a real system, we'd want this to be atomic or use outbox.
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "messaging error"})
+	}
+
+	return c.JSON(http.StatusCreated, map[string]string{"id": taskID})
 }
 
 func (h *Handler) GetThreadTasks(c echo.Context) error {
