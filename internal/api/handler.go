@@ -41,6 +41,8 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 	api.POST("/threads/:id/messages", h.PostMessage)
 	api.GET("/threads/:id/tasks", h.GetThreadTasks)
 	api.DELETE("/threads/:id", h.DeleteThread)
+	api.POST("/threads/:id/reflection-requests", h.RequestReflection)
+	api.POST("/reflections", h.SubmitReflection)
 	api.GET("/agents", h.GetAgents)
 	api.POST("/agents", h.CreateAgent)
 	api.GET("/agents/:id", h.GetAgent)
@@ -1186,4 +1188,229 @@ func (h *Handler) GetTeamRelations(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, relations)
+}
+
+type RequestReflectionRequest struct {
+	RequestedByAgent string     `json:"requested_by_agent"`
+	DueAt            *time.Time `json:"due_at,omitempty"`
+}
+
+type RequestReflectionResponse struct {
+	RequestID          string `json:"request_id"`
+	ReflectionThreadID string `json:"reflection_thread_id"`
+}
+
+type SubmitReflectionRequest struct {
+	RequestID     string `json:"request_id"`
+	FromAgentID   string `json:"from_agent_id"`
+	TargetAgentID string `json:"target_agent_id"`
+	Dimension     string `json:"dimension"`
+	Score         int    `json:"score"`
+	Reason        string `json:"reason"`
+	Suggestion    string `json:"suggestion,omitempty"`
+}
+
+func (h *Handler) RequestReflection(c echo.Context) error {
+	ctx := c.Request().Context()
+	parentThreadID := c.Param("id")
+
+	var req RequestReflectionRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request format"})
+	}
+
+	if req.RequestedByAgent == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "requested_by_agent is required"})
+	}
+
+	// 1. Fetch parent thread details to get team_id
+	var teamID *string
+	err := h.DB.QueryRow(ctx, "SELECT team_id FROM threads WHERE id = $1", parentThreadID).Scan(&teamID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "THREAD_NOT_FOUND"})
+	}
+	if teamID == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "parent thread must be associated with a team to request reflection"})
+	}
+
+	// 2. Fetch all unique agents in the same team
+	rows, err := h.DB.Query(ctx, `
+		SELECT agent_id FROM team_agents WHERE team_id = $1
+		UNION
+		SELECT id AS agent_id FROM agents WHERE team_id = $1
+	`, *teamID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to fetch team agents"})
+	}
+	defer rows.Close()
+
+	var teamAgents []string
+	for rows.Next() {
+		var aid string
+		if err := rows.Scan(&aid); err == nil {
+			teamAgents = append(teamAgents, aid)
+		}
+	}
+
+	if len(teamAgents) == 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "NO_TEAM_MEMBERS"})
+	}
+
+	// 3. Create automatic reflection subthread (using the subthread workflow)
+	reflectionThreadID := ulid.Make().String()
+	reflectionInputDir := h.Storage.GetThreadInputPath(reflectionThreadID)
+
+	// Create S3 Folders
+	if err = h.Storage.CreateThreadFolders(ctx, reflectionThreadID); err != nil {
+		c.Logger().Errorf("failed to create s3 folders: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "storage error"})
+	}
+
+	// Create DB record for the subthread
+	_, err = h.DB.Exec(ctx, `
+		INSERT INTO threads (id, parent_thread_id, created_by_agent, status, team_id)
+		VALUES ($1, $2, $3, 'open', $4)
+	`, reflectionThreadID, parentThreadID, req.RequestedByAgent, teamID)
+	if err != nil {
+		c.Logger().Errorf("failed to insert subthread: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+	}
+
+	// Generate due_at (default to 24 hours from now if empty)
+	dueAt := time.Now().Add(24 * time.Hour)
+	if req.DueAt != nil {
+		dueAt = *req.DueAt
+	}
+
+	// 4. Create record in thread_reflection_requests
+	requestID := ulid.Make().String()
+	_, err = h.DB.Exec(ctx, `
+		INSERT INTO thread_reflection_requests (id, thread_id, reflection_thread_id, requested_by_agent_id, status, due_at)
+		VALUES ($1, $2, $3, $4, 'pending', $5)
+	`, requestID, parentThreadID, reflectionThreadID, req.RequestedByAgent, dueAt)
+	if err != nil {
+		c.Logger().Errorf("failed to insert reflection request: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+	}
+
+	// 5. Build reflection task command/message with all team agent mentions (excluding requesting agent)
+	mentionText := ""
+	for _, aid := range teamAgents {
+		if aid != req.RequestedByAgent {
+			mentionText += " @" + aid
+		}
+	}
+	reflectionCommand := fmt.Sprintf("[Reflection] Please submit your reflection for thread %s.%s", parentThreadID, mentionText)
+
+	// Publish Reflection task message to NATS
+	taskPayload := models.TaskPayload{
+		Command:  reflectionCommand,
+		InputDir: reflectionInputDir,
+		Deadline: dueAt.Format(time.RFC3339),
+	}
+	payloadBytes, _ := json.Marshal(taskPayload)
+
+	envelope := models.MessageEnvelope{
+		Type:      "task",
+		ThreadID:  &reflectionThreadID,
+		From:      req.RequestedByAgent,
+		To:        teamAgents,
+		Timestamp: time.Now().Unix(),
+		Payload:   payloadBytes,
+	}
+	envelopeBytes, _ := json.Marshal(envelope)
+
+	subject := fmt.Sprintf("board.task.%s", reflectionThreadID)
+	if _, err = h.NATS.JS.Publish(ctx, subject, envelopeBytes); err != nil {
+		c.Logger().Errorf("failed to publish reflection task: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "messaging error"})
+	}
+
+	return c.JSON(http.StatusCreated, RequestReflectionResponse{
+		RequestID:          requestID,
+		ReflectionThreadID: reflectionThreadID,
+	})
+}
+
+func (h *Handler) SubmitReflection(c echo.Context) error {
+	ctx := c.Request().Context()
+
+	var req SubmitReflectionRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request format"})
+	}
+
+	if req.RequestID == "" || req.FromAgentID == "" || req.TargetAgentID == "" || req.Dimension == "" || req.Reason == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "request_id, from_agent_id, target_agent_id, dimension, and reason are required"})
+	}
+
+	if req.Score < -1 || req.Score > 1 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "score must be -1, 0, or 1"})
+	}
+
+	// 1. Fetch reflection request details
+	var threadID string
+	var dueAt time.Time
+	err := h.DB.QueryRow(ctx, "SELECT thread_id, due_at FROM thread_reflection_requests WHERE id = $1", req.RequestID).Scan(&threadID, &dueAt)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "REFLECTION_REQUEST_NOT_FOUND"})
+	}
+
+	// 2. Check if due_at has expired
+	if time.Now().After(dueAt) {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "REFLECTION_REQUEST_EXPIRED"})
+	}
+
+	// 3. Fetch team_id associated with the thread
+	var teamID string
+	err = h.DB.QueryRow(ctx, "SELECT team_id FROM threads WHERE id = $1", threadID).Scan(&teamID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to fetch thread team"})
+	}
+
+	// 4. Validate that both from_agent_id and target_agent_id belong to the same team_id
+	var exists bool
+	err = h.DB.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM team_agents ta1
+			JOIN team_agents ta2 ON ta1.team_id = ta2.team_id
+			WHERE ta1.team_id = $1 AND ta1.agent_id = $2 AND ta2.agent_id = $3
+		) OR EXISTS (
+			SELECT 1 FROM agents a1
+			JOIN agents a2 ON a1.team_id = a2.team_id
+			WHERE a1.team_id = $1 AND a1.id = $2 AND a2.id = $3
+		)
+	`, teamID, req.FromAgentID, req.TargetAgentID).Scan(&exists)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to validate agent relationships"})
+	}
+
+	if !exists {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "INVALID_TARGET_AGENT"})
+	}
+
+	// 5. Save/Upsert reflection into database (ON CONFLICT DO UPDATE)
+	reflectionID := ulid.Make().String()
+	var suggestionVal *string
+	if req.Suggestion != "" {
+		suggestionVal = &req.Suggestion
+	}
+
+	_, err = h.DB.Exec(ctx, `
+		INSERT INTO thread_reflections (id, request_id, thread_id, team_id, from_agent_id, target_agent_id, dimension, score, reason, suggestion)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (request_id, from_agent_id, target_agent_id, dimension)
+		DO UPDATE SET
+			score = EXCLUDED.score,
+			reason = EXCLUDED.reason,
+			suggestion = EXCLUDED.suggestion,
+			created_at = CURRENT_TIMESTAMP
+	`, reflectionID, req.RequestID, threadID, teamID, req.FromAgentID, req.TargetAgentID, req.Dimension, req.Score, req.Reason, suggestionVal)
+
+	if err != nil {
+		c.Logger().Errorf("failed to save reflection: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to save reflection"})
+	}
+
+	return c.JSON(http.StatusCreated, map[string]string{"id": reflectionID})
 }
