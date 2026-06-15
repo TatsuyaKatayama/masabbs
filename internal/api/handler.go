@@ -107,6 +107,8 @@ type CreateThreadResponse struct {
 type PostMessageRequest struct {
 	FromAgent string                 `json:"from_agent"`
 	Message   string                 `json:"message"`
+	To        []string               `json:"to,omitempty"`
+	Observers []string               `json:"observers,omitempty"`
 	OutputDir string                 `json:"output_dir,omitempty"`
 	Error     string                 `json:"error,omitempty"`
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`
@@ -237,7 +239,36 @@ func (h *Handler) CreateThread(c echo.Context) error {
 		}
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": resolveRes.ErrorCode})
 	}
-	req.To = resolveRes.ToAgents
+
+	// Merge request 'to' and resolved mentions
+	combinedTo := make(map[string]bool)
+	for _, a := range req.To {
+		if a != "" {
+			combinedTo[a] = true
+		}
+	}
+	for _, a := range resolveRes.ToAgents {
+		combinedTo[a] = true
+	}
+
+	req.To = make([]string, 0, len(combinedTo))
+	for a := range combinedTo {
+		req.To = append(req.To, a)
+	}
+
+	if len(req.To) == 0 {
+		if !isExisting {
+			h.DB.Exec(ctx, "DELETE FROM threads WHERE id = $1", threadID)
+		}
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "NO_RECIPIENT"})
+	}
+
+	if teamID == nil {
+		if !isExisting {
+			h.DB.Exec(ctx, "DELETE FROM threads WHERE id = $1", threadID)
+		}
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "TEAM_ID_REQUIRED"})
+	}
 
 	// 4. Publish to NATS
 	taskPayload := models.TaskPayload{
@@ -825,6 +856,37 @@ func (h *Handler) PostMessage(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": resolveRes.ErrorCode})
 	}
 
+	// Merge request 'to' and resolved mentions
+	combinedTo := make(map[string]bool)
+	for _, a := range req.To {
+		if a != "" {
+			combinedTo[a] = true
+		}
+	}
+	for _, a := range resolveRes.ToAgents {
+		combinedTo[a] = true
+	}
+	req.To = make([]string, 0, len(combinedTo))
+	for a := range combinedTo {
+		req.To = append(req.To, a)
+	}
+
+	if len(req.To) == 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "NO_RECIPIENT"})
+	}
+
+	// Merge request 'observers' (explicit CC)
+	combinedObservers := make(map[string]bool)
+	for _, a := range req.Observers {
+		if a != "" {
+			combinedObservers[a] = true
+		}
+	}
+	req.Observers = make([]string, 0, len(combinedObservers))
+	for a := range combinedObservers {
+		req.Observers = append(req.Observers, a)
+	}
+
 	// 4. Save to DB (tasks table)
 	taskID := ulid.Make().String()
 	payload := models.ResultPayload{
@@ -836,9 +898,9 @@ func (h *Handler) PostMessage(c echo.Context) error {
 	payloadBytes, _ := json.Marshal(payload)
 
 	_, err = h.DB.Exec(ctx, `
-		INSERT INTO tasks (id, thread_id, agent_id, type, to_agents, payload)
-		VALUES ($1, $2, $3, 'result', $4, $5)
-	`, taskID, threadID, req.FromAgent, resolveRes.ToAgents, payloadBytes)
+		INSERT INTO tasks (id, thread_id, agent_id, type, to_agents, observers, payload)
+		VALUES ($1, $2, $3, 'result', $4, $5, $6)
+	`, taskID, threadID, req.FromAgent, req.To, req.Observers, payloadBytes)
 	if err != nil {
 		c.Logger().Errorf("failed to insert task: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
@@ -853,7 +915,8 @@ func (h *Handler) PostMessage(c echo.Context) error {
 		Type:      "result",
 		ThreadID:  &threadID,
 		From:      req.FromAgent,
-		To:        resolveRes.ToAgents,
+		To:        req.To,
+		Observers: req.Observers,
 		Timestamp: time.Now().Unix(),
 		Payload:   payloadBytes,
 	}

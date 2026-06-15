@@ -26,13 +26,13 @@ export default function AgentsPage() {
   const [formData, setFormData] = useState({
 		id: '',
 		name: '',
-		role: 'worker',
+		role: 'Worker',
 		mission: '',
 	});
 
   const [detailFormData, setDetailFormData] = useState({
     name: '',
-    role: 'worker',
+    role: 'Worker',
     mission: ''
   });
 
@@ -134,7 +134,7 @@ export default function AgentsPage() {
       }
 
       setIsModalOpen(false);
-			setFormData({ id: '', name: '', role: 'worker', mission: '' });
+			setFormData({ id: '', name: '', role: 'Worker', mission: '' });
       Promise.resolve().then(() => refreshAgents());
     } catch (err) {
       if (err instanceof Error) setError(err.message);
@@ -188,8 +188,9 @@ export default function AgentsPage() {
                 </td>
                 <td className="px-6 py-5 whitespace-nowrap text-xs font-bold">
                   <span className={`px-2 py-1 rounded-md border ${
-                    agent.role === 'manager' ? 'bg-purple-50 border-purple-100 text-purple-700' :
-                    agent.role === 'worker' ? 'bg-blue-50 border-blue-100 text-blue-700' :
+                    agent.role === 'TeamManager' || agent.role === 'manager' ? 'bg-indigo-50 border-indigo-100 text-indigo-700' :
+                    agent.role === 'Chef' ? 'bg-pink-50 border-pink-100 text-pink-700' :
+                    agent.role === 'Worker' || agent.role === 'worker' ? 'bg-slate-50 border-slate-100 text-slate-700' :
                     'bg-slate-50 border-slate-100 text-slate-600'
                   }`}>
                     {agent.role}
@@ -277,9 +278,9 @@ export default function AgentsPage() {
                     value={formData.role}
                     onChange={(e) => setFormData({ ...formData, role: e.target.value })}
                   >
-                    <option value="worker">Worker</option>
-                    <option value="manager">Manager</option>
-                    <option value="observer">Observer</option>
+                    <option value="Worker">Worker</option>
+                    <option value="Chef">Chef</option>
+                    <option value="TeamManager">TeamManager</option>
                   </select>
                 </div>
 								<div>
@@ -357,7 +358,7 @@ export default function AgentsPage() {
                     <h4 className="text-sm font-bold uppercase tracking-tight">System Role</h4>
                   </div>
                   <div className="grid grid-cols-3 gap-3">
-                    {['manager', 'worker', 'observer'].map((r) => (
+                    {['TeamManager', 'Chef', 'Worker'].map((r) => (
                       <button
                         key={r}
                         type="button"

@@ -13,12 +13,11 @@ import {
 } from 'lucide-react';
 
 const navigation = [
+  { name: 'Dashboard', href: '/dashboard', icon: BarChart3 },
   { name: 'Agents', href: '/agents', icon: Users },
   { name: 'Org Tree', href: '/org', icon: Network },
-  { name: 'Overview', href: '/overview', icon: Map },
+  { name: 'System Map', href: '/overview', icon: Map },
   { name: 'Message Board', href: '/board', icon: MessageSquare },
-  { name: 'KPI Analytics', href: '/analytics', icon: BarChart3 },
-  { name: 'Operations', href: '/operations', icon: PlayCircle },
 ];
 
 export default function Sidebar() {

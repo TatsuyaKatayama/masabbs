@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Team } from '@/types';
 import { useStore } from '@/store/useStore';
+import { readJsonArray } from '@/lib/http/json';
 
 export default function TeamSwitcher() {
   const selectedTeamId = useStore((state) => state.selectedTeamId);
@@ -11,9 +12,8 @@ export default function TeamSwitcher() {
 
   useEffect(() => {
     fetch('/api/v1/teams')
-      .then((res) => res.json())
+      .then(readJsonArray<Team>)
       .then((data) => {
-        if (!Array.isArray(data)) return;
         setTeams(data);
         if (!selectedTeamId && data.length > 0) {
           setSelectedTeamId(data[0].id);
@@ -40,4 +40,3 @@ export default function TeamSwitcher() {
     </div>
   );
 }
-

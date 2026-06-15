@@ -8,6 +8,7 @@ class WebSocketClient {
   private agentId: string;
   private callbacks: MessageCallback[] = [];
   private reconnectTimeout: NodeJS.Timeout | null = null;
+  private warnedUnavailable = false;
 
   constructor(url: string, agentId: string) {
     this.url = url;
@@ -26,6 +27,7 @@ class WebSocketClient {
 
     this.socket.onopen = () => {
       console.log('WebSocket connected');
+      this.warnedUnavailable = false;
       if (this.reconnectTimeout) {
         clearTimeout(this.reconnectTimeout);
         this.reconnectTimeout = null;
@@ -42,12 +44,14 @@ class WebSocketClient {
     };
 
     this.socket.onclose = () => {
-      console.log('WebSocket disconnected, retrying in 3 seconds...');
+      if (!this.warnedUnavailable) {
+        console.info('WebSocket unavailable; retrying in 3 seconds.');
+        this.warnedUnavailable = true;
+      }
       this.reconnectTimeout = setTimeout(() => this.connect(), 3000);
     };
 
-    this.socket.onerror = (error) => {
-      console.error('WebSocket error:', error);
+    this.socket.onerror = () => {
       this.socket?.close();
     };
   }

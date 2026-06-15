@@ -12,8 +12,9 @@ import {
   Layers,
   TrendingDown
 } from 'lucide-react';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import * as d3 from 'd3';
+import { readJsonArray, readJsonOrNull, readErrorMessage } from '@/lib/http/json';
 
 interface KPINetworkNode extends d3.SimulationNodeDatum {
   id: string;
@@ -59,6 +60,7 @@ interface KPIData {
 }
 
 export default function AnalyticsPage() {
+  const agents = useStore((state) => state.agents);
   const threads = useStore((state) => state.threads);
   const [teams, setTeams] = useState<{ id: string; name: string }[]>([]);
   const [analysisType, setAnalyticsType] = useState<'team' | 'thread'>('team');
@@ -71,18 +73,17 @@ export default function AnalyticsPage() {
 
   const svgRef = useRef<SVGSVGElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
+  const agentRoleById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.role])), [agents]);
 
   // Fetch Teams
   useEffect(() => {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     fetch(`${apiUrl}/api/v1/teams`)
-      .then((res) => res.json())
+      .then(readJsonArray<{ id: string; name: string }>)
       .then((data) => {
-        if (Array.isArray(data)) {
-          setTeams(data);
-          if (data.length > 0) {
-            setSelectedTeamId(data[0].id);
-          }
+        setTeams(data);
+        if (data.length > 0) {
+          setSelectedTeamId(data[0].id);
         }
       })
       .catch((err) => console.error('Failed to fetch teams:', err));
@@ -90,10 +91,13 @@ export default function AnalyticsPage() {
 
   // Set default selected thread
   useEffect(() => {
-    if (threads.length > 0 && !selectedThreadId) {
-      Promise.resolve().then(() => {
-        setSelectedThreadId(threads[0].id);
-      });
+    if (threads.length === 0) {
+      if (selectedThreadId) setSelectedThreadId('');
+      return;
+    }
+
+    if (!threads.some((thread) => thread.id === selectedThreadId)) {
+      setSelectedThreadId(threads[0].id);
     }
   }, [threads, selectedThreadId]);
 
@@ -117,11 +121,14 @@ export default function AnalyticsPage() {
 
     fetch(url)
       .then(async (res) => {
+        const contentType = res.headers.get('content-type') || '';
         if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || `HTTP error ${res.status}`);
+          throw new Error(await readErrorMessage(res, `HTTP error ${res.status}`));
         }
-        return res.json();
+        if (!contentType.includes('application/json')) {
+          throw new Error('API returned a non-JSON response. Check API proxy/server configuration.');
+        }
+        return readJsonOrNull<KPIData>(res);
       })
       .then((data) => {
         setKpiData(data);
@@ -138,139 +145,146 @@ export default function AnalyticsPage() {
 
   // Render D3.js Network Diagram
   useEffect(() => {
-    if (!svgRef.current || !kpiData || !kpiData.network_data) return;
-
-    const network = kpiData.network_data;
-    // Deep copy nodes and links to prevent mutating state
-    const nodes: KPINetworkNode[] = network.nodes.map(n => ({ ...n }));
-    const links: KPINetworkLink[] = network.links.map(l => ({ ...l }));
+    if (!svgRef.current) return;
 
     const svgElement = d3.select(svgRef.current);
     svgElement.selectAll('*').remove();
 
-    const width = 800;
-    const height = 500;
+    if (!kpiData?.network_data?.nodes?.length) return;
 
-    // Arrow markers
-    svgElement.append('defs').append('marker')
-      .attr('id', 'arrow')
-      .attr('viewBox', '0 -5 10 10')
-      .attr('refX', 22)
-      .attr('refY', 0)
-      .attr('markerWidth', 6)
-      .attr('markerHeight', 6)
-      .attr('orient', 'auto')
-      .append('path')
-      .attr('d', 'M0,-5L10,0L0,5')
-      .attr('fill', '#94a3b8');
+    try {
+      const network = kpiData.network_data;
+      const nodes: KPINetworkNode[] = (network.nodes || []).map(n => ({ ...n, count: toNumber(n.count) }));
+      const nodeIds = new Set(nodes.map((node) => node.id));
+      const links: KPINetworkLink[] = (network.links || [])
+        .filter((link) => typeof link.source === 'string' && typeof link.target === 'string' && nodeIds.has(link.source) && nodeIds.has(link.target))
+        .map(l => ({ ...l, value: toNumber(l.value) }));
 
-    const simulation = d3.forceSimulation<KPINetworkNode>(nodes)
-      .force('link', d3.forceLink<KPINetworkNode, KPINetworkLink>(links).id(d => d.id).distance(150))
-      .force('charge', d3.forceManyBody().strength(-900))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius(60));
+      const width = 800;
+      const height = 500;
 
-    const link = svgElement.append('g')
-      .selectAll('path')
-      .data(links)
-      .enter().append('path')
-      .attr('stroke', '#475569')
-      .attr('stroke-opacity', 0.5)
-      .attr('fill', 'none')
-      .attr('stroke-width', d => Math.max(2, Math.sqrt(d.value) * 3))
-      .attr('marker-end', 'url(#arrow)');
+      // Arrow markers
+      svgElement.append('defs').append('marker')
+        .attr('id', 'arrow')
+        .attr('viewBox', '0 -5 10 10')
+        .attr('refX', 22)
+        .attr('refY', 0)
+        .attr('markerWidth', 6)
+        .attr('markerHeight', 6)
+        .attr('orient', 'auto')
+        .append('path')
+        .attr('d', 'M0,-5L10,0L0,5')
+        .attr('fill', '#94a3b8');
 
-    const node = svgElement.append('g')
-      .selectAll('circle')
-      .data(nodes)
-      .enter().append('circle')
-      .attr('r', d => Math.max(15, Math.sqrt(d.count) * 8 + 10))
-      .attr('fill', d => {
-        const idLower = d.id.toLowerCase();
-        if (idLower.includes('manager') || idLower.includes('leader')) return '#6366f1'; // Indigo for leaders
-        if (idLower.includes('chef')) return '#ec4899'; // Pink for chefs
-        if (idLower.includes('reviewer')) return '#f43f5e'; // Red for reviewers
-        if (idLower.includes('foamer') || idLower.includes('omc')) return '#10b981'; // Green for specific tools
-        return '#475569'; // Slate for workers
-      })
-      .attr('stroke', '#ffffff')
-      .attr('stroke-width', 2)
-      .attr('cursor', 'grab')
-      .call(d3.drag<SVGCircleElement, KPINetworkNode>()
-        .on('start', (event, d) => {
-          if (!event.active) simulation.alphaTarget(0.3).restart();
-          d.fx = d.x;
-          d.fy = d.y;
+      const simulation = d3.forceSimulation<KPINetworkNode>(nodes)
+        .force('link', d3.forceLink<KPINetworkNode, KPINetworkLink>(links).id(d => d.id).distance(150))
+        .force('charge', d3.forceManyBody().strength(-900))
+        .force('center', d3.forceCenter(width / 2, height / 2))
+        .force('collision', d3.forceCollide().radius(60));
+
+      const link = svgElement.append('g')
+        .selectAll('path')
+        .data(links)
+        .enter().append('path')
+        .attr('stroke', '#475569')
+        .attr('stroke-opacity', 0.5)
+        .attr('fill', 'none')
+        .attr('stroke-width', d => Math.max(2, Math.sqrt(d.value) * 3))
+        .attr('marker-end', 'url(#arrow)');
+
+      const node = svgElement.append('g')
+        .selectAll('circle')
+        .data(nodes)
+        .enter().append('circle')
+        .attr('r', d => Math.max(15, Math.sqrt(d.count) * 8 + 10))
+        .attr('fill', d => {
+          const role = agentRoleById.get(d.id);
+          if (role === 'TeamManager' || role === 'manager') return '#6366f1';
+          if (role === 'Chef') return '#ec4899';
+          return '#475569';
         })
-        .on('drag', (event, d) => {
-          d.fx = event.x;
-          d.fy = event.y;
+        .attr('stroke', '#ffffff')
+        .attr('stroke-width', 2)
+        .attr('cursor', 'grab')
+        .call(d3.drag<SVGCircleElement, KPINetworkNode>()
+          .on('start', (event, d) => {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+          })
+          .on('drag', (event, d) => {
+            d.fx = event.x;
+            d.fy = event.y;
+          })
+          .on('end', (event, d) => {
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+          }))
+        .on('mouseover', (event, d) => {
+          if (tooltipRef.current) {
+            const tooltip = d3.select(tooltipRef.current);
+            tooltip.style('opacity', 1)
+              .html(`
+                <div class="font-bold text-indigo-400 text-sm mb-1">${d.id}</div>
+                <div class="text-xs text-slate-300">Sent Messages: <span class="font-black text-white">${d.count}</span></div>
+              `)
+              .style('left', (event.clientX + 15) + 'px')
+              .style('top', (event.clientY - 15) + 'px');
+          }
+          d3.select(event.currentTarget)
+            .attr('stroke', '#818cf8')
+            .attr('stroke-width', 4)
+            .style('filter', 'brightness(1.2)');
         })
-        .on('end', (event, d) => {
-          if (!event.active) simulation.alphaTarget(0);
-          d.fx = null;
-          d.fy = null;
-        }))
-      .on('mouseover', (event, d) => {
-        if (tooltipRef.current) {
-          const tooltip = d3.select(tooltipRef.current);
-          tooltip.style('opacity', 1)
-            .html(`
-              <div class="font-bold text-indigo-400 text-sm mb-1">${d.id}</div>
-              <div class="text-xs text-slate-300">Sent Messages: <span class="font-black text-white">${d.count}</span></div>
-            `)
-            .style('left', (event.clientX + 15) + 'px')
-            .style('top', (event.clientY - 15) + 'px');
-        }
-        d3.select(event.currentTarget)
-          .attr('stroke', '#818cf8')
-          .attr('stroke-width', 4)
-          .style('filter', 'brightness(1.2)');
-      })
-      .on('mousemove', (event) => {
-        if (tooltipRef.current) {
-          d3.select(tooltipRef.current)
-            .style('left', (event.clientX + 15) + 'px')
-            .style('top', (event.clientY - 15) + 'px');
-        }
-      })
-      .on('mouseout', (event) => {
-        if (tooltipRef.current) {
-          d3.select(tooltipRef.current).style('opacity', 0);
-        }
-        d3.select(event.currentTarget)
-          .attr('stroke', '#ffffff')
-          .attr('stroke-width', 2)
-          .style('filter', 'brightness(1)');
+        .on('mousemove', (event) => {
+          if (tooltipRef.current) {
+            d3.select(tooltipRef.current)
+              .style('left', (event.clientX + 15) + 'px')
+              .style('top', (event.clientY - 15) + 'px');
+          }
+        })
+        .on('mouseout', (event) => {
+          if (tooltipRef.current) {
+            d3.select(tooltipRef.current).style('opacity', 0);
+          }
+          d3.select(event.currentTarget)
+            .attr('stroke', '#ffffff')
+            .attr('stroke-width', 2)
+            .style('filter', 'brightness(1)');
+        });
+
+      const label = svgElement.append('g')
+        .selectAll('text')
+        .data(nodes)
+        .enter().append('text')
+        .attr('text-anchor', 'middle')
+        .attr('fill', '#f8fafc')
+        .attr('font-size', '12px')
+        .attr('font-weight', 'bold')
+        .attr('pointer-events', 'none')
+        .style('text-shadow', '0 2px 4px rgba(0,0,0,0.9)')
+        .text(d => d.id);
+
+      simulation.on('tick', () => {
+        link.attr('d', d => {
+          const sourceNode = d.source as KPINetworkNode;
+          const targetNode = d.target as KPINetworkNode;
+          const dx = (targetNode.x ?? 0) - (sourceNode.x ?? 0);
+          const dy = (targetNode.y ?? 0) - (sourceNode.y ?? 0);
+          const dr = Math.sqrt(dx * dx + dy * dy);
+          return `M${sourceNode.x ?? 0},${sourceNode.y ?? 0}A${dr},${dr} 0 0,1 ${targetNode.x ?? 0},${targetNode.y ?? 0}`;
+        });
+
+        node.attr('cx', d => d.x ?? 0).attr('cy', d => d.y ?? 0);
+        label.attr('x', d => d.x ?? 0).attr('y', d => (d.y ?? 0) - Math.max(18, Math.sqrt(d.count) * 8 + 14));
       });
+    } catch (err) {
+      console.error('Failed to render KPI network:', err);
+      svgElement.selectAll('*').remove();
+    }
 
-    const label = svgElement.append('g')
-      .selectAll('text')
-      .data(nodes)
-      .enter().append('text')
-      .attr('text-anchor', 'middle')
-      .attr('fill', '#f8fafc')
-      .attr('font-size', '12px')
-      .attr('font-weight', 'bold')
-      .attr('pointer-events', 'none')
-      .style('text-shadow', '0 2px 4px rgba(0,0,0,0.9)')
-      .text(d => d.id);
-
-    simulation.on('tick', () => {
-      link.attr('d', d => {
-        const sourceNode = d.source as KPINetworkNode;
-        const targetNode = d.target as KPINetworkNode;
-        const dx = targetNode.x! - sourceNode.x!;
-        const dy = targetNode.y! - sourceNode.y!;
-        const dr = Math.sqrt(dx * dx + dy * dy);
-        return `M${sourceNode.x!},${sourceNode.y!}A${dr},${dr} 0 0,1 ${targetNode.x!},${targetNode.y!}`;
-      });
-
-      node.attr('cx', d => d.x!).attr('cy', d => d.y!);
-      label.attr('x', d => d.x!).attr('y', d => d.y! - Math.max(18, Math.sqrt(d.count) * 8 + 14));
-    });
-
-  }, [kpiData]);
+  }, [kpiData, agentRoleById]);
 
   // Format reply delay
   const formatDelay = (seconds: number) => {
@@ -279,6 +293,42 @@ export default function AnalyticsPage() {
     const mins = Math.floor(seconds / 60);
     const secs = Math.round(seconds % 60);
     return `${mins}m ${secs}s`;
+  };
+
+  const toNumber = (value: unknown) => {
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? numberValue : 0;
+  };
+
+  const toNumberRecord = (record: Record<string, unknown> | undefined) => {
+    return Object.fromEntries(
+      Object.entries(record ?? {}).map(([key, value]) => [key, toNumber(value)])
+    );
+  };
+
+  const messageStats = {
+    total_messages: toNumber(kpiData?.message_stats?.total_messages),
+    sent_counts: toNumberRecord(kpiData?.message_stats?.sent_counts),
+    received_counts: toNumberRecord(kpiData?.message_stats?.received_counts),
+  };
+  const replyMetrics = {
+    average_reply_delay_seconds: toNumber(kpiData?.reply_metrics?.average_reply_delay_seconds),
+    unreplied_count: toNumber(kpiData?.reply_metrics?.unreplied_count),
+    unreplied_rate: toNumber(kpiData?.reply_metrics?.unreplied_rate),
+  };
+  const reflectionStats = {
+    average_score: toNumber(kpiData?.reflection_stats?.average_score),
+    by_dimension: toNumberRecord(kpiData?.reflection_stats?.by_dimension),
+  };
+  const networkData = {
+    nodes: kpiData?.network_data?.nodes ?? [],
+    links: kpiData?.network_data?.links ?? [],
+  };
+  const threadMetrics = {
+    total_threads: toNumber(kpiData?.total_threads),
+    total_subthreads: toNumber(kpiData?.total_subthreads),
+    subthread_count: toNumber(kpiData?.subthread_count),
+    max_depth: toNumber(kpiData?.max_depth),
   };
 
   return (
@@ -339,10 +389,10 @@ export default function AnalyticsPage() {
               onChange={(e) => setSelectedThreadId(e.target.value)}
               className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm font-bold text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 max-w-[240px] truncate"
             >
-              <option value="" disabled>Select Thread</option>
+              <option value="">{threads.length === 0 ? 'No Threads Available' : 'Select Thread'}</option>
               {threads.map((t) => (
                 <option key={t.id} value={t.id}>
-                  {t.id} - {t.created_by_agent}
+                  {t.id}{t.created_by_agent ? ` - ${t.created_by_agent}` : ''}
                 </option>
               ))}
             </select>
@@ -384,7 +434,7 @@ export default function AnalyticsPage() {
                 <MessageSquare className="h-6 w-6 text-indigo-500" />
               </div>
               <div className="mt-3 flex items-baseline">
-                <span className="text-3xl font-extrabold text-white">{kpiData.message_stats.total_messages}</span>
+                <span className="text-3xl font-extrabold text-white">{messageStats.total_messages}</span>
                 <span className="ml-1 text-sm text-slate-400">sent</span>
               </div>
             </div>
@@ -400,22 +450,22 @@ export default function AnalyticsPage() {
               {analysisType === 'team' ? (
                 <div className="mt-3 flex items-baseline justify-between">
                   <div>
-                    <span className="text-3xl font-extrabold text-white">{kpiData.total_threads}</span>
+                    <span className="text-3xl font-extrabold text-white">{threadMetrics.total_threads}</span>
                     <span className="ml-1 text-xs text-slate-400">roots</span>
                   </div>
                   <div className="text-right">
-                    <span className="text-sm font-bold text-slate-300">+{kpiData.total_subthreads}</span>
+                    <span className="text-sm font-bold text-slate-300">+{threadMetrics.total_subthreads}</span>
                     <span className="ml-1 text-xs text-slate-400">subs</span>
                   </div>
                 </div>
               ) : (
                 <div className="mt-3 flex items-baseline justify-between">
                   <div>
-                    <span className="text-3xl font-extrabold text-white">{kpiData.subthread_count}</span>
+                    <span className="text-3xl font-extrabold text-white">{threadMetrics.subthread_count}</span>
                     <span className="ml-1 text-xs text-slate-400">subthreads</span>
                   </div>
                   <div className="text-right">
-                    <span className="text-sm font-bold text-slate-300">Depth {kpiData.max_depth}</span>
+                    <span className="text-sm font-bold text-slate-300">Depth {threadMetrics.max_depth}</span>
                     <span className="ml-1 text-xs text-slate-400">max</span>
                   </div>
                 </div>
@@ -430,7 +480,7 @@ export default function AnalyticsPage() {
               </div>
               <div className="mt-3 flex items-baseline">
                 <span className="text-3xl font-extrabold text-white">
-                  {formatDelay(kpiData.reply_metrics.average_reply_delay_seconds)}
+                  {formatDelay(replyMetrics.average_reply_delay_seconds)}
                 </span>
               </div>
             </div>
@@ -439,7 +489,7 @@ export default function AnalyticsPage() {
             <div className="rounded-xl border border-slate-800 bg-slate-900 p-6 shadow-sm">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-bold text-slate-400 uppercase tracking-wider">Unreplied Rate</span>
-                {kpiData.reply_metrics.unreplied_rate > 0.15 ? (
+                {replyMetrics.unreplied_rate > 0.15 ? (
                   <TrendingUp className="h-6 w-6 text-rose-500" />
                 ) : (
                   <TrendingDown className="h-6 w-6 text-emerald-500" />
@@ -448,11 +498,11 @@ export default function AnalyticsPage() {
               <div className="mt-3 flex items-baseline justify-between">
                 <div>
                   <span className="text-3xl font-extrabold text-white">
-                    {(kpiData.reply_metrics.unreplied_rate * 100).toFixed(1)}%
+                    {(replyMetrics.unreplied_rate * 100).toFixed(1)}%
                   </span>
                 </div>
                 <div className="text-right">
-                  <span className="text-sm font-bold text-slate-300">{kpiData.reply_metrics.unreplied_count}</span>
+                  <span className="text-sm font-bold text-slate-300">{replyMetrics.unreplied_count}</span>
                   <span className="ml-1 text-xs text-slate-400">pending</span>
                 </div>
               </div>
@@ -470,17 +520,15 @@ export default function AnalyticsPage() {
                   Interaction Flow Map (D3.js)
                 </h3>
                 <span className="rounded-full bg-slate-800 px-3 py-1 text-xs font-black uppercase text-indigo-400">
-                  {kpiData.network_data?.nodes?.length || 0} nodes
+                  {networkData.nodes.length} nodes
                 </span>
               </div>
               
               <div className="relative p-6 flex justify-center items-center h-[520px]">
                 <div className="absolute top-4 left-4 bg-slate-950/70 p-3 rounded-lg border border-slate-800 font-mono text-[10px] space-y-1 z-10">
                   <div className="font-bold mb-1 border-b border-slate-800 pb-1 uppercase tracking-widest text-slate-400">Legend</div>
-                  <div className="flex items-center"><span className="w-2.5 h-2.5 rounded-full bg-[#6366f1] mr-1.5" /> Leader/Manager</div>
+                  <div className="flex items-center"><span className="w-2.5 h-2.5 rounded-full bg-[#6366f1] mr-1.5" /> TeamManager</div>
                   <div className="flex items-center"><span className="w-2.5 h-2.5 rounded-full bg-[#ec4899] mr-1.5" /> Chef</div>
-                  <div className="flex items-center"><span className="w-2.5 h-2.5 rounded-full bg-[#f43f5e] mr-1.5" /> Reviewer</div>
-                  <div className="flex items-center"><span className="w-2.5 h-2.5 rounded-full bg-[#10b981] mr-1.5" /> Tool/Foamer</div>
                   <div className="flex items-center"><span className="w-2.5 h-2.5 rounded-full bg-[#475569] mr-1.5" /> Worker</div>
                   <div className="text-slate-500 border-t border-slate-800 pt-1 mt-1 font-sans">• Drag nodes to rearrange</div>
                 </div>
@@ -503,8 +551,8 @@ export default function AnalyticsPage() {
                 
                 <div className="text-center py-6">
                   <div className="text-5xl font-black text-white">
-                    {kpiData.reflection_stats.average_score !== 0 
-                      ? (kpiData.reflection_stats.average_score).toFixed(2)
+                    {reflectionStats.average_score !== 0 
+                      ? (reflectionStats.average_score).toFixed(2)
                       : 'N/A'
                     }
                   </div>
@@ -516,10 +564,10 @@ export default function AnalyticsPage() {
                 {/* Dimension breakdown */}
                 <div className="space-y-4">
                   <h4 className="text-xs font-black uppercase tracking-widest text-slate-500">Breakdown by Dimension</h4>
-                  {Object.keys(kpiData.reflection_stats.by_dimension).length === 0 ? (
+                  {Object.keys(reflectionStats.by_dimension).length === 0 ? (
                     <div className="text-sm text-slate-500 italic py-4 text-center">No reflection evaluations submitted yet.</div>
                   ) : (
-                    Object.entries(kpiData.reflection_stats.by_dimension).map(([dim, score]) => {
+                    Object.entries(reflectionStats.by_dimension).map(([dim, score]) => {
                       // Normalize score from -1..1 to 0..100%
                       const percentage = ((score + 1) / 2) * 100;
                       return (
@@ -558,10 +606,10 @@ export default function AnalyticsPage() {
 
                 <div className="space-y-3">
                   <h4 className="text-xs font-black uppercase tracking-widest text-slate-500 mb-3">Top Message Senders</h4>
-                  {Object.keys(kpiData.message_stats.sent_counts).length === 0 ? (
+                  {Object.keys(messageStats.sent_counts).length === 0 ? (
                     <div className="text-sm text-slate-500 italic py-4 text-center">No messages sent in this scope.</div>
                   ) : (
-                    Object.entries(kpiData.message_stats.sent_counts)
+                    Object.entries(messageStats.sent_counts)
                       .sort((a, b) => b[1] - a[1])
                       .slice(0, 5)
                       .map(([agentId, count], idx) => (
