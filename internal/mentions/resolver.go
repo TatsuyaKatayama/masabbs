@@ -48,7 +48,7 @@ func NewResolver(db *pgxpool.Pool) *Resolver {
 func (r *Resolver) Resolve(ctx context.Context, message string, threadID string, fromAgent string) Result {
 	matches := mentionRegex.FindAllStringSubmatch(message, -1)
 	if len(matches) == 0 {
-		return Result{ErrorCode: "NO_RECIPIENT"}
+		return Result{ToAgents: []string{}}
 	}
 
 	uniqueMentions := make(map[string]bool)
@@ -103,10 +103,6 @@ func (r *Resolver) Resolve(ctx context.Context, message string, threadID string,
 			return Result{ErrorCode: "UNKNOWN_MENTION"}
 		}
 		resolvedIDs[m] = true
-	}
-
-	if len(resolvedIDs) == 0 {
-		return Result{ErrorCode: "NO_RECIPIENT"}
 	}
 
 	final := make([]string, 0, len(resolvedIDs))

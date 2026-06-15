@@ -4,6 +4,7 @@ import { useStore } from '@/store/useStore';
 import { 
   MessageSquare, 
   User, 
+  Users,
   Clock, 
   Send,
   Layers,
@@ -18,11 +19,14 @@ import {
   Loader2
 } from 'lucide-react';
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { MessageEnvelope } from '@/types';
+import { Agent, MessageEnvelope } from '@/types';
 import Image from 'next/image';
 import TeamSwitcher from '@/components/TeamSwitcher';
+import { readJsonArray } from '@/lib/http/json';
 
 export default function BoardPage() {
+  const agents = useStore((state) => state.agents);
+  const setAgents = useStore((state) => state.setAgents);
   const messages = useStore((state) => state.messages);
   const setMessages = useStore((state) => state.setMessages);
   const threads = useStore((state) => state.threads);
@@ -31,10 +35,35 @@ export default function BoardPage() {
   
   const [command, setCommand] = useState('');
   const [threadIdInput, setThreadIdInput] = useState('');
-  const [toAgentsInput, setToAgentsInput] = useState('');
+  const [toAgentIds, setToAgentIds] = useState<string[]>([]);
+  const [observerAgentIds, setObserverAgentIds] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
   const [collapsedThreads, setCollapsedThreads] = useState<Record<string, boolean>>({});
   const [previewThread, setPreviewThread] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (agents.length > 0) return;
+
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
+    fetch(`${apiUrl}/api/v1/agents`)
+      .then(readJsonArray<Agent>)
+      .then((data) => {
+        setAgents(data);
+      })
+      .catch((err) => console.error('Failed to fetch agents:', err));
+  }, [agents.length, setAgents]);
+
+  const availableAgents = useMemo(() => {
+    return agents
+      .filter((agent) => !selectedTeamId || agent.team_id === selectedTeamId)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [agents, selectedTeamId]);
+
+  useEffect(() => {
+    setToAgentIds((current) => current.filter((id) => availableAgents.some((agent) => agent.id === id)));
+    setObserverAgentIds((current) => current.filter((id) => availableAgents.some((agent) => agent.id === id)));
+  }, [availableAgents]);
 
   const toggleCollapse = (threadId: string) => {
     setCollapsedThreads(prev => ({
@@ -113,27 +142,45 @@ export default function BoardPage() {
 
   const handlePostTask = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!command.trim()) return;
+    const trimmedCommand = command.trim();
+    const hasMention = /(^|\s)@[A-Za-z0-9_.-]+/.test(trimmedCommand);
+
+    if (!selectedTeamId) {
+      setFormError('Select a team before posting.');
+      return;
+    }
+
+    if (!trimmedCommand) {
+      setFormError('Command is required.');
+      return;
+    }
+
+    if (toAgentIds.length === 0 && !hasMention) {
+      setFormError('Choose at least one To recipient or mention an agent in the command.');
+      return;
+    }
 
     setIsSubmitting(true);
+    setFormError(null);
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     try {
       const payload: Record<string, unknown> = {
-        command,
+        command: trimmedCommand,
         created_by_agent: 'admin-ui',
         deadline: new Date(Date.now() + 3600000).toISOString(),
+        team_id: selectedTeamId,
       };
 
       if (threadIdInput.trim()) {
         payload.thread_id = threadIdInput.trim();
       }
 
-      if (toAgentsInput.trim()) {
-        payload.to = toAgentsInput.split(',').map(s => s.trim()).filter(s => s !== '');
+      if (toAgentIds.length > 0) {
+        payload.to = toAgentIds;
       }
 
-      if (selectedTeamId) {
-        payload.team_id = selectedTeamId;
+      if (observerAgentIds.length > 0) {
+        payload.observers = observerAgentIds;
       }
 
       const response = await fetch(`${apiUrl}/api/v1/threads`, {
@@ -144,12 +191,27 @@ export default function BoardPage() {
 
       if (response.ok) {
         setCommand('');
+        setThreadIdInput('');
+        setToAgentIds([]);
+        setObserverAgentIds([]);
+
+        const [threadsRes, tasksRes] = await Promise.all([
+          fetch(`${apiUrl}/api/v1/threads`),
+          fetch(`${apiUrl}/api/v1/tasks`),
+        ]);
+        const [threadsData, tasksData] = await Promise.all([
+          threadsRes.json().catch(() => []),
+          tasksRes.json().catch(() => []),
+        ]);
+        if (Array.isArray(threadsData)) setThreads(threadsData);
+        if (Array.isArray(tasksData)) setMessages(tasksData);
       } else {
-        const errData = await response.json();
-        alert(`Error: ${errData.error}`);
+        const errData = await response.json().catch(() => ({}));
+        setFormError(errData.error || 'Failed to post task.');
       }
     } catch (err) {
       console.error('Failed to post task:', err);
+      setFormError(err instanceof Error ? err.message : 'Failed to post task.');
     } finally {
       setIsSubmitting(false);
     }
@@ -269,8 +331,14 @@ export default function BoardPage() {
       {/* Quick Input Bar at the Bottom */}
       <div className="mt-4 bg-white p-4 shadow-lg ring-1 ring-slate-200 rounded-t-xl border-t-2 border-indigo-500 sticky bottom-0">
         <form onSubmit={handlePostTask} className="space-y-3">
-          <div className="flex gap-4 items-center">
-            <div className="flex-1 flex gap-2">
+          {formError && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
+              {formError}
+            </div>
+          )}
+
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+            <div className="flex flex-1 flex-col gap-2 sm:flex-row">
               <div className="flex items-center bg-slate-50 border border-slate-300 rounded px-2 py-1">
                 <span className="text-[10px] font-bold text-slate-500 mr-2 uppercase">Thread ID:</span>
                 <input 
@@ -282,16 +350,21 @@ export default function BoardPage() {
                 />
               </div>
 
-              <div className="flex items-center bg-slate-50 border border-slate-300 rounded px-2 py-1">
-                <span className="text-[10px] font-bold text-slate-500 mr-2 uppercase">To:</span>
-                <input 
-                  type="text"
-                  value={toAgentsInput}
-                  onChange={(e) => setToAgentsInput(e.target.value)}
-                  placeholder="agent1, agent2 (All if empty)"
-                  className="text-xs bg-transparent focus:outline-none text-slate-700 w-48"
-                />
-              </div>
+              <AgentMultiSelect
+                label="To"
+                agents={availableAgents}
+                selectedIds={toAgentIds}
+                onChange={setToAgentIds}
+                disabled={!selectedTeamId || isSubmitting}
+              />
+
+              <AgentMultiSelect
+                label="CC"
+                agents={availableAgents}
+                selectedIds={observerAgentIds}
+                onChange={setObserverAgentIds}
+                disabled={!selectedTeamId || isSubmitting}
+              />
             </div>
           </div>
 
@@ -300,15 +373,18 @@ export default function BoardPage() {
               <input
                 type="text"
                 value={command}
-                onChange={(e) => setCommand(e.target.value)}
-                placeholder="Post a new task to all agents..."
+                onChange={(e) => {
+                  setCommand(e.target.value);
+                  if (formError) setFormError(null);
+                }}
+                placeholder={selectedTeamId ? "Post a new task, or mention @agent-id..." : "Select a team before posting..."}
                 className="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 shadow-inner"
-                disabled={isSubmitting}
+                disabled={isSubmitting || !selectedTeamId}
               />
             </div>
             <button
               type="submit"
-              disabled={isSubmitting || !command.trim()}
+              disabled={isSubmitting || !selectedTeamId || !command.trim()}
               className="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700 transition-all flex items-center font-bold shadow-md active:transform active:scale-95 disabled:opacity-50"
             >
               {isSubmitting ? '...' : <Send className="h-5 w-5" />}
@@ -317,6 +393,99 @@ export default function BoardPage() {
           </div>
         </form>
       </div>
+    </div>
+  );
+}
+
+function AgentMultiSelect({
+  label,
+  agents,
+  selectedIds,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  agents: { id: string; name: string; role: string }[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+  disabled?: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const selectedAgents = agents.filter((agent) => selectedIds.includes(agent.id));
+
+  const toggleAgent = (agentId: string) => {
+    onChange(
+      selectedIds.includes(agentId)
+        ? selectedIds.filter((id) => id !== agentId)
+        : [...selectedIds, agentId]
+    );
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setIsOpen((current) => !current)}
+        className="flex min-h-8 w-full min-w-52 items-center justify-between gap-2 rounded border border-slate-300 bg-slate-50 px-2 py-1 text-left text-xs text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="text-[10px] font-bold uppercase text-slate-500">{label}:</span>
+          <span className="truncate font-medium">
+            {selectedAgents.length > 0
+              ? selectedAgents.map((agent) => agent.name || agent.id).join(', ')
+              : 'Select agents'}
+          </span>
+        </span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+      </button>
+
+      {isOpen && !disabled && (
+        <div className="absolute bottom-full left-0 z-30 mb-2 w-72 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl">
+          <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
+            <div className="flex items-center text-xs font-bold text-slate-700">
+              <Users className="mr-1.5 h-3.5 w-3.5 text-indigo-500" />
+              {label} recipients
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsOpen(false)}
+              className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          <div className="max-h-64 overflow-y-auto p-1">
+            {agents.length === 0 ? (
+              <div className="px-3 py-6 text-center text-xs italic text-slate-400">
+                No agents in the selected team.
+              </div>
+            ) : (
+              agents.map((agent) => (
+                <label
+                  key={agent.id}
+                  className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 hover:bg-slate-50"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.includes(agent.id)}
+                    onChange={() => toggleAgent(agent.id)}
+                    className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-bold text-slate-800">{agent.name || agent.id}</span>
+                    <span className="block truncate font-mono text-[10px] text-slate-400">{agent.id}</span>
+                  </span>
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">
+                    {agent.role}
+                  </span>
+                </label>
+              ))
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

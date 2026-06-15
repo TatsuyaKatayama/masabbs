@@ -3,7 +3,8 @@
 import { useEffect } from 'react';
 import { wsClient } from '@/lib/websocket/client';
 import { useStore } from '@/store/useStore';
-import { MessageEnvelope } from '@/types';
+import { Agent, MessageEnvelope, Thread } from '@/types';
+import { readJsonArray } from '@/lib/http/json';
 
 export default function WebSocketHandler() {
   const addMessage = useStore((state) => state.addMessage);
@@ -17,23 +18,23 @@ export default function WebSocketHandler() {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
     
     fetch(`${apiUrl}/api/v1/agents`)
-      .then(res => res.json())
+      .then(readJsonArray<Agent>)
       .then(data => {
-        if (Array.isArray(data)) setAgents(data);
+        setAgents(data);
       })
       .catch(err => console.error('Failed to fetch agents:', err));
 
     fetch(`${apiUrl}/api/v1/threads`)
-      .then(res => res.json())
+      .then(readJsonArray<Thread>)
       .then(data => {
-        if (Array.isArray(data)) setThreads(data);
+        setThreads(data);
       })
       .catch(err => console.error('Failed to fetch threads:', err));
 
     fetch(`${apiUrl}/api/v1/tasks`)
-      .then(res => res.json())
+      .then(readJsonArray<MessageEnvelope>)
       .then(data => {
-        if (Array.isArray(data)) setMessages(data);
+        setMessages(data);
       })
       .catch(err => console.error('Failed to fetch tasks:', err));
 

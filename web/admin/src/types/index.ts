@@ -1,4 +1,4 @@
-export type AgentRole = 'manager' | 'worker' | 'observer' | 'admin';
+export type AgentRole = 'TeamManager' | 'Chef' | 'Worker' | 'manager' | 'worker' | 'observer' | 'admin';
 export type AgentStatus = 'online' | 'offline' | 'busy';
 
 export interface Agent {
