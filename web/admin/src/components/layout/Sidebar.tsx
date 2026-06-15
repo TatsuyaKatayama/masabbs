@@ -6,7 +6,6 @@ import {
   Users, 
   Network, 
   MessageSquare, 
-  PlayCircle, 
   Settings,
   Map,
   BarChart3

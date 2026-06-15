@@ -60,10 +60,19 @@ export default function BoardPage() {
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [agents, selectedTeamId]);
 
-  useEffect(() => {
-    setToAgentIds((current) => current.filter((id) => availableAgents.some((agent) => agent.id === id)));
-    setObserverAgentIds((current) => current.filter((id) => availableAgents.some((agent) => agent.id === id)));
+  const availableAgentIds = useMemo(() => {
+    return new Set(availableAgents.map((agent) => agent.id));
   }, [availableAgents]);
+
+  const validToAgentIds = useMemo(
+    () => toAgentIds.filter((id) => availableAgentIds.has(id)),
+    [toAgentIds, availableAgentIds]
+  );
+
+  const validObserverAgentIds = useMemo(
+    () => observerAgentIds.filter((id) => availableAgentIds.has(id)),
+    [observerAgentIds, availableAgentIds]
+  );
 
   const toggleCollapse = (threadId: string) => {
     setCollapsedThreads(prev => ({
@@ -155,7 +164,7 @@ export default function BoardPage() {
       return;
     }
 
-    if (toAgentIds.length === 0 && !hasMention) {
+    if (validToAgentIds.length === 0 && !hasMention) {
       setFormError('Choose at least one To recipient or mention an agent in the command.');
       return;
     }
@@ -175,12 +184,12 @@ export default function BoardPage() {
         payload.thread_id = threadIdInput.trim();
       }
 
-      if (toAgentIds.length > 0) {
-        payload.to = toAgentIds;
+      if (validToAgentIds.length > 0) {
+        payload.to = validToAgentIds;
       }
 
-      if (observerAgentIds.length > 0) {
-        payload.observers = observerAgentIds;
+      if (validObserverAgentIds.length > 0) {
+        payload.observers = validObserverAgentIds;
       }
 
       const response = await fetch(`${apiUrl}/api/v1/threads`, {
@@ -353,7 +362,7 @@ export default function BoardPage() {
               <AgentMultiSelect
                 label="To"
                 agents={availableAgents}
-                selectedIds={toAgentIds}
+                selectedIds={validToAgentIds}
                 onChange={setToAgentIds}
                 disabled={!selectedTeamId || isSubmitting}
               />
@@ -361,7 +370,7 @@ export default function BoardPage() {
               <AgentMultiSelect
                 label="CC"
                 agents={availableAgents}
-                selectedIds={observerAgentIds}
+                selectedIds={validObserverAgentIds}
                 onChange={setObserverAgentIds}
                 disabled={!selectedTeamId || isSubmitting}
               />

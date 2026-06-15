@@ -59,6 +59,17 @@ interface KPIData {
   };
 }
 
+function toNumber(value: unknown) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+function toNumberRecord(record: Record<string, unknown> | undefined) {
+  return Object.fromEntries(
+    Object.entries(record ?? {}).map(([key, value]) => [key, toNumber(value)])
+  );
+}
+
 export default function AnalyticsPage() {
   const agents = useStore((state) => state.agents);
   const threads = useStore((state) => state.threads);
@@ -74,6 +85,13 @@ export default function AnalyticsPage() {
   const svgRef = useRef<SVGSVGElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const agentRoleById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.role])), [agents]);
+  const activeThreadId = useMemo(() => {
+    if (threads.length === 0) return '';
+    if (selectedThreadId && threads.some((thread) => thread.id === selectedThreadId)) {
+      return selectedThreadId;
+    }
+    return threads[0].id;
+  }, [threads, selectedThreadId]);
 
   // Fetch Teams
   useEffect(() => {
@@ -89,18 +107,6 @@ export default function AnalyticsPage() {
       .catch((err) => console.error('Failed to fetch teams:', err));
   }, []);
 
-  // Set default selected thread
-  useEffect(() => {
-    if (threads.length === 0) {
-      if (selectedThreadId) setSelectedThreadId('');
-      return;
-    }
-
-    if (!threads.some((thread) => thread.id === selectedThreadId)) {
-      setSelectedThreadId(threads[0].id);
-    }
-  }, [threads, selectedThreadId]);
-
   // Fetch KPI data
   useEffect(() => {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
@@ -108,8 +114,8 @@ export default function AnalyticsPage() {
 
     if (analysisType === 'team' && selectedTeamId) {
       url = `${apiUrl}/api/v1/teams/${selectedTeamId}/kpi`;
-    } else if (analysisType === 'thread' && selectedThreadId) {
-      url = `${apiUrl}/api/v1/threads/${selectedThreadId}/kpi`;
+    } else if (analysisType === 'thread' && activeThreadId) {
+      url = `${apiUrl}/api/v1/threads/${activeThreadId}/kpi`;
     } else {
       return;
     }
@@ -141,7 +147,7 @@ export default function AnalyticsPage() {
       .finally(() => {
         setIsLoading(false);
       });
-  }, [analysisType, selectedTeamId, selectedThreadId]);
+  }, [analysisType, selectedTeamId, activeThreadId]);
 
   // Render D3.js Network Diagram
   useEffect(() => {
@@ -295,17 +301,6 @@ export default function AnalyticsPage() {
     return `${mins}m ${secs}s`;
   };
 
-  const toNumber = (value: unknown) => {
-    const numberValue = Number(value);
-    return Number.isFinite(numberValue) ? numberValue : 0;
-  };
-
-  const toNumberRecord = (record: Record<string, unknown> | undefined) => {
-    return Object.fromEntries(
-      Object.entries(record ?? {}).map(([key, value]) => [key, toNumber(value)])
-    );
-  };
-
   const messageStats = {
     total_messages: toNumber(kpiData?.message_stats?.total_messages),
     sent_counts: toNumberRecord(kpiData?.message_stats?.sent_counts),
@@ -385,7 +380,7 @@ export default function AnalyticsPage() {
             </select>
           ) : (
             <select
-              value={selectedThreadId}
+              value={activeThreadId}
               onChange={(e) => setSelectedThreadId(e.target.value)}
               className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm font-bold text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 max-w-[240px] truncate"
             >
