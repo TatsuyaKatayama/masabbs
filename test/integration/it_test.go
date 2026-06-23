@@ -188,6 +188,41 @@ func TestIntegration_IT002_DuplicateMessages(t *testing.T) {
 	assert.Equal(t, 1, count, "Archiver should record only the first result message (Idempotency)")
 }
 
+func TestIntegration_IT002B_ArchiverUsesEnvelopeIDForIdempotency(t *testing.T) {
+	db, nc, cleanup := setupIntegrationEnvironment(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	archiver := &worker.Archiver{
+		DB: db,
+		JS: nc.JS,
+	}
+	go archiver.Start(ctx)
+
+	time.Sleep(1 * time.Second)
+
+	threadID := "thread-it-002b"
+	_, err := db.Exec(ctx, "INSERT INTO threads (id, created_by_agent, status) VALUES ($1, 'agent-1', 'open')", threadID)
+	require.NoError(t, err)
+
+	taskID := "task-it-002b"
+	validJSON := fmt.Sprintf(`{"id":"%s", "type":"task", "thread_id":"%s", "from":"agent-1", "to":["agent-2"], "timestamp":%d, "payload":{"command":"run"}}`, taskID, threadID, time.Now().Unix())
+
+	for i := 0; i < 2; i++ {
+		_, err := nc.JS.Publish(ctx, "board.task."+threadID, []byte(validJSON))
+		require.NoError(t, err)
+	}
+
+	time.Sleep(2 * time.Second)
+
+	var count int
+	err = db.QueryRow(ctx, "SELECT count(*) FROM tasks WHERE id = $1", taskID).Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "Archiver should treat envelope id as the persisted task id")
+}
+
 func TestIntegration_IT003_DelayedMessageState(t *testing.T) {
 	db, nc, cleanup := setupIntegrationEnvironment(t)
 	defer cleanup()

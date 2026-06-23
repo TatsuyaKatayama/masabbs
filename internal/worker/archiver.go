@@ -107,6 +107,24 @@ func (a *Archiver) processMessage(msg jetstream.Msg) {
 	defer cancel()
 
 	var err error
+	taskID := env.ID
+	if taskID == "" {
+		taskID = ulid.Make().String()
+	}
+
+	if env.ID != "" {
+		var exists bool
+		err = a.DB.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM tasks WHERE id = $1)", env.ID).Scan(&exists)
+		if err != nil {
+			log.Printf("Archiver failed to check message idempotency: %v", err)
+			msg.NakWithDelay(5 * time.Second)
+			return
+		}
+		if exists {
+			msg.Ack()
+			return
+		}
+	}
 
 	// Thread Check & Idempotency
 	if env.ThreadID != nil && *env.ThreadID != "" {
@@ -148,8 +166,6 @@ func (a *Archiver) processMessage(msg jetstream.Msg) {
 			}
 		}
 	}
-
-	taskID := ulid.Make().String()
 
 	_, err = a.DB.Exec(ctx, `
 		INSERT INTO tasks (id, thread_id, agent_id, type, to_agents, observers, payload)
