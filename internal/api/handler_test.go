@@ -249,6 +249,58 @@ func TestTeamOrganizationAPI(t *testing.T) {
 	})
 }
 
+func TestAgentTeamMemberships(t *testing.T) {
+	db, cleanup := setupDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	_, err := db.Exec(ctx, `INSERT INTO teams (id, name, mission) VALUES ('team-a', 'Team A', 'Mission A'), ('team-b', 'Team B', 'Mission B')`)
+	require.NoError(t, err)
+	_, err = db.Exec(ctx, `INSERT INTO agents (id, name, role, mission) VALUES ('agent-single', 'Single Agent', 'worker', 'single mission')`)
+	require.NoError(t, err)
+	_, err = db.Exec(ctx, `INSERT INTO agents (id, name, role, mission) VALUES ('agent-multi', 'Multi Agent', 'worker', 'multi mission')`)
+	require.NoError(t, err)
+	_, err = db.Exec(ctx, `INSERT INTO team_agents (team_id, agent_id) VALUES ('team-a', 'agent-single'), ('team-a', 'agent-multi'), ('team-b', 'agent-multi')`)
+	require.NoError(t, err)
+
+	e := echo.New()
+	h := &Handler{DB: db}
+	e.GET("/api/v1/agents/:id", h.GetAgent)
+
+	t.Run("GetAgent includes team_agents memberships", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/agents/agent-single", nil)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusOK, rec.Code)
+
+		var resp struct {
+			Agent   models.Agent    `json:"agent"`
+			TeamIDs []string        `json:"team_ids"`
+			Teams   []AgentTeamInfo `json:"teams"`
+		}
+		err := json.Unmarshal(rec.Body.Bytes(), &resp)
+		require.NoError(t, err)
+
+		assert.Equal(t, "agent-single", resp.Agent.ID)
+		assert.Nil(t, resp.Agent.TeamID)
+		assert.Equal(t, []string{"team-a"}, resp.TeamIDs)
+		require.Len(t, resp.Teams, 1)
+		assert.Equal(t, "Mission A", resp.Teams[0].Mission)
+	})
+
+	t.Run("resolveAgentSingleTeamID resolves only unambiguous memberships", func(t *testing.T) {
+		teamID, err := h.resolveAgentSingleTeamID(ctx, "agent-single")
+		require.NoError(t, err)
+		require.NotNil(t, teamID)
+		assert.Equal(t, "team-a", *teamID)
+
+		teamID, err = h.resolveAgentSingleTeamID(ctx, "agent-multi")
+		require.NoError(t, err)
+		assert.Nil(t, teamID)
+	})
+}
+
 func TestGetThreadContext(t *testing.T) {
 	db, cleanup := setupDB(t)
 	defer cleanup()
