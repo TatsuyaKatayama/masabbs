@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/TatsuyaKatayama/masabbs/internal/auth"
@@ -39,6 +40,7 @@ func RegisterRoutes(e *echo.Echo, db *pgxpool.Pool, nc *nats.Client, sc storage.
 	api.POST("/threads", h.CreateThread)
 	api.GET("/threads", h.GetThreads)
 	api.GET("/threads/:id", h.GetThread)
+	api.GET("/threads/:id/context", h.GetThreadContext)
 	api.POST("/threads/:id/messages", h.PostMessage)
 	api.GET("/threads/:id/tasks", h.GetThreadTasks)
 	api.DELETE("/threads/:id", h.DeleteThread)
@@ -102,6 +104,20 @@ type CreateThreadRequest struct {
 type CreateThreadResponse struct {
 	ThreadID string `json:"thread_id"`
 	InputDir string `json:"input_dir"`
+}
+
+type ThreadContextResponse struct {
+	Thread  models.Thread             `json:"thread"`
+	Threads []models.Thread           `json:"threads"`
+	Tasks   []models.MessageEnvelope  `json:"tasks"`
+	Logs    []models.TaskLog          `json:"logs"`
+	Options ThreadContextQueryOptions `json:"options"`
+}
+
+type ThreadContextQueryOptions struct {
+	IncludeSubthreads bool   `json:"include_subthreads"`
+	MessageLimit      int    `json:"message_limit,omitempty"`
+	Order             string `json:"order"`
 }
 
 type PostMessageRequest struct {
@@ -830,6 +846,210 @@ func (h *Handler) GetThread(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, t)
+}
+
+func (h *Handler) GetThreadContext(c echo.Context) error {
+	ctx := c.Request().Context()
+	threadID := c.Param("id")
+	if threadID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "thread id is required"})
+	}
+
+	includeSubthreads, err := strconv.ParseBool(c.QueryParam("include_subthreads"))
+	if c.QueryParam("include_subthreads") == "" {
+		includeSubthreads = false
+		err = nil
+	}
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "include_subthreads must be a boolean"})
+	}
+
+	messageLimit := 0
+	if rawLimit := c.QueryParam("message_limit"); rawLimit != "" {
+		messageLimit, err = strconv.Atoi(rawLimit)
+		if err != nil || messageLimit <= 0 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "message_limit must be a positive integer"})
+		}
+	}
+
+	order := c.QueryParam("order")
+	if order == "" {
+		order = "asc"
+	}
+	if order != "asc" && order != "desc" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "order must be asc or desc"})
+	}
+
+	root, threads, err := h.getContextThreads(ctx, threadID, includeSubthreads)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+	}
+	if root == nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "thread not found"})
+	}
+
+	threadIDs := make([]string, 0, len(threads))
+	for _, thread := range threads {
+		threadIDs = append(threadIDs, thread.ID)
+	}
+
+	tasks, err := h.getContextTasks(ctx, threadIDs, order, messageLimit)
+	if err != nil {
+		c.Logger().Errorf("failed to query context tasks: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+	}
+
+	logs, err := h.getContextLogs(ctx, threadIDs, order, messageLimit)
+	if err != nil {
+		c.Logger().Errorf("failed to query context logs: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+	}
+
+	return c.JSON(http.StatusOK, ThreadContextResponse{
+		Thread:  *root,
+		Threads: threads,
+		Tasks:   tasks,
+		Logs:    logs,
+		Options: ThreadContextQueryOptions{
+			IncludeSubthreads: includeSubthreads,
+			MessageLimit:      messageLimit,
+			Order:             order,
+		},
+	})
+}
+
+func (h *Handler) getContextThreads(ctx context.Context, threadID string, includeSubthreads bool) (*models.Thread, []models.Thread, error) {
+	query := `
+		SELECT id, parent_thread_id, created_by_agent, assigned_agent, status, team_id, created_at, updated_at
+		FROM threads
+		WHERE id = $1
+	`
+	if includeSubthreads {
+		query = `
+			WITH RECURSIVE thread_tree AS (
+				SELECT id, parent_thread_id, created_by_agent, assigned_agent, status, team_id, created_at, updated_at
+				FROM threads
+				WHERE id = $1
+				UNION ALL
+				SELECT child.id, child.parent_thread_id, child.created_by_agent, child.assigned_agent, child.status, child.team_id, child.created_at, child.updated_at
+				FROM threads child
+				INNER JOIN thread_tree parent ON child.parent_thread_id = parent.id
+			)
+			SELECT id, parent_thread_id, created_by_agent, assigned_agent, status, team_id, created_at, updated_at
+			FROM thread_tree
+			ORDER BY created_at ASC
+		`
+	}
+
+	rows, err := h.DB.Query(ctx, query, threadID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	var root *models.Thread
+	threads := []models.Thread{}
+	for rows.Next() {
+		var thread models.Thread
+		if err := rows.Scan(
+			&thread.ID, &thread.ParentThreadID, &thread.CreatedByAgent, &thread.AssignedAgent,
+			&thread.Status, &thread.TeamID, &thread.CreatedAt, &thread.UpdatedAt,
+		); err != nil {
+			return nil, nil, err
+		}
+		if thread.ID == threadID {
+			rootCopy := thread
+			root = &rootCopy
+		}
+		threads = append(threads, thread)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	return root, threads, nil
+}
+
+func (h *Handler) getContextTasks(ctx context.Context, threadIDs []string, order string, limit int) ([]models.MessageEnvelope, error) {
+	if len(threadIDs) == 0 {
+		return []models.MessageEnvelope{}, nil
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id, payload, type, agent_id, thread_id, to_agents, observers, created_at
+		FROM tasks
+		WHERE thread_id = ANY($1)
+		ORDER BY created_at %s
+	`, order)
+	args := []interface{}{threadIDs}
+	if limit > 0 {
+		query += " LIMIT $2"
+		args = append(args, limit)
+	}
+
+	rows, err := h.DB.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := []models.MessageEnvelope{}
+	for rows.Next() {
+		var id string
+		var payload []byte
+		var msgType, agentID string
+		var tID *string
+		var toAgents, observers []string
+		var createdAt time.Time
+		if err := rows.Scan(&id, &payload, &msgType, &agentID, &tID, &toAgents, &observers, &createdAt); err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, models.MessageEnvelope{
+			ID:        id,
+			Type:      msgType,
+			ThreadID:  tID,
+			From:      agentID,
+			To:        toAgents,
+			Observers: observers,
+			Timestamp: createdAt.Unix(),
+			Payload:   payload,
+		})
+	}
+	return tasks, rows.Err()
+}
+
+func (h *Handler) getContextLogs(ctx context.Context, threadIDs []string, order string, limit int) ([]models.TaskLog, error) {
+	if len(threadIDs) == 0 {
+		return []models.TaskLog{}, nil
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id, thread_id, agent_id, level, message, created_at
+		FROM logs
+		WHERE thread_id = ANY($1)
+		ORDER BY created_at %s, id %s
+	`, order, order)
+	args := []interface{}{threadIDs}
+	if limit > 0 {
+		query += " LIMIT $2"
+		args = append(args, limit)
+	}
+
+	rows, err := h.DB.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	logs := []models.TaskLog{}
+	for rows.Next() {
+		var log models.TaskLog
+		if err := rows.Scan(&log.ID, &log.ThreadID, &log.AgentID, &log.Level, &log.Message, &log.CreatedAt); err != nil {
+			return nil, err
+		}
+		logs = append(logs, log)
+	}
+	return logs, rows.Err()
 }
 
 func (h *Handler) PostMessage(c echo.Context) error {

@@ -249,6 +249,107 @@ func TestTeamOrganizationAPI(t *testing.T) {
 	})
 }
 
+func TestGetThreadContext(t *testing.T) {
+	db, cleanup := setupDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	_, err := db.Exec(ctx, `INSERT INTO teams (id, name) VALUES ('team-context', 'Context Team')`)
+	require.NoError(t, err)
+	_, err = db.Exec(ctx, `INSERT INTO agents (id, name, role, team_id) VALUES ('agent-a', 'Agent A', 'manager', 'team-context')`)
+	require.NoError(t, err)
+	_, err = db.Exec(ctx, `INSERT INTO agents (id, name, role, team_id) VALUES ('agent-b', 'Agent B', 'worker', 'team-context')`)
+	require.NoError(t, err)
+	_, err = db.Exec(ctx, `
+		INSERT INTO threads (id, created_by_agent, status, team_id, created_at)
+		VALUES ('thread-root', 'agent-a', 'open', 'team-context', '2026-06-24T00:00:00Z')
+	`)
+	require.NoError(t, err)
+	_, err = db.Exec(ctx, `
+		INSERT INTO threads (id, parent_thread_id, created_by_agent, status, team_id, created_at)
+		VALUES ('thread-child', 'thread-root', 'agent-b', 'open', 'team-context', '2026-06-24T00:05:00Z')
+	`)
+	require.NoError(t, err)
+	_, err = db.Exec(ctx, `
+		INSERT INTO tasks (id, thread_id, agent_id, type, to_agents, observers, payload, created_at)
+		VALUES
+			('task-root', 'thread-root', 'agent-a', 'task', ARRAY['agent-b'], ARRAY[]::TEXT[], '{"command":"root"}', '2026-06-24T00:01:00Z'),
+			('task-child', 'thread-child', 'agent-b', 'task', ARRAY['agent-a'], ARRAY[]::TEXT[], '{"command":"child"}', '2026-06-24T00:02:00Z'),
+			('task-result', 'thread-child', 'agent-b', 'result', ARRAY['agent-a'], ARRAY[]::TEXT[], '{"message":"done"}', '2026-06-24T00:03:00Z')
+	`)
+	require.NoError(t, err)
+	_, err = db.Exec(ctx, `
+		INSERT INTO logs (thread_id, agent_id, level, message, created_at)
+		VALUES
+			('thread-root', 'agent-a', 'info', 'root log', '2026-06-24T00:01:30Z'),
+			('thread-child', 'agent-b', 'info', 'child log', '2026-06-24T00:02:30Z')
+	`)
+	require.NoError(t, err)
+
+	e := echo.New()
+	h := &Handler{DB: db}
+	e.GET("/api/v1/threads/:id/context", h.GetThreadContext)
+
+	t.Run("root thread only by default", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/threads/thread-root/context", nil)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusOK, rec.Code)
+
+		var resp ThreadContextResponse
+		err := json.Unmarshal(rec.Body.Bytes(), &resp)
+		require.NoError(t, err)
+
+		assert.Equal(t, "thread-root", resp.Thread.ID)
+		assert.False(t, resp.Options.IncludeSubthreads)
+		assert.Len(t, resp.Threads, 1)
+		assert.Len(t, resp.Tasks, 1)
+		assert.Equal(t, "task-root", resp.Tasks[0].ID)
+		assert.Len(t, resp.Logs, 1)
+		assert.Equal(t, "root log", resp.Logs[0].Message)
+	})
+
+	t.Run("includes subthreads with ordering and limit", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/threads/thread-root/context?include_subthreads=true&order=desc&message_limit=2", nil)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusOK, rec.Code)
+
+		var resp ThreadContextResponse
+		err := json.Unmarshal(rec.Body.Bytes(), &resp)
+		require.NoError(t, err)
+
+		assert.True(t, resp.Options.IncludeSubthreads)
+		assert.Equal(t, "desc", resp.Options.Order)
+		assert.Equal(t, 2, resp.Options.MessageLimit)
+		assert.Len(t, resp.Threads, 2)
+		assert.Len(t, resp.Tasks, 2)
+		assert.Equal(t, "task-result", resp.Tasks[0].ID)
+		assert.Equal(t, "task-child", resp.Tasks[1].ID)
+		assert.Len(t, resp.Logs, 2)
+		assert.Equal(t, "child log", resp.Logs[0].Message)
+		assert.Equal(t, "root log", resp.Logs[1].Message)
+	})
+
+	t.Run("unknown thread returns 404", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/threads/missing/context", nil)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusNotFound, rec.Code)
+	})
+
+	t.Run("invalid query returns 400", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/threads/thread-root/context?order=sideways", nil)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+}
+
 func TestHealthCheck(t *testing.T) {
 	db, cleanup := setupDB(t)
 	defer cleanup()
