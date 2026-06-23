@@ -106,6 +106,12 @@ type CreateThreadResponse struct {
 	InputDir string `json:"input_dir"`
 }
 
+type AgentTeamInfo struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Mission string `json:"mission"`
+}
+
 type ThreadContextResponse struct {
 	Thread  models.Thread             `json:"thread"`
 	Threads []models.Thread           `json:"threads"`
@@ -161,12 +167,15 @@ func (h *Handler) CreateThread(c echo.Context) error {
 		if !models.CanCreateTopLevelThread(normalizedRole) {
 			return c.JSON(http.StatusForbidden, map[string]string{"error": "PERMISSION_DENIED: only TeamManager can create top-level threads"})
 		}
-		// If TeamID is not explicitly provided, fetch the creator agent's team_id
+		// If TeamID is not explicitly provided, fetch the creator agent's team.
 		if teamID == nil {
-			var agentTeamID *string
-			err = h.DB.QueryRow(ctx, "SELECT team_id FROM agents WHERE id = $1", req.CreatedByAgent).Scan(&agentTeamID)
-			if err == nil && agentTeamID != nil && *agentTeamID != "" {
-				teamID = agentTeamID
+			resolvedTeamID, resolveErr := h.resolveAgentSingleTeamID(ctx, req.CreatedByAgent)
+			if resolveErr != nil {
+				c.Logger().Errorf("failed to resolve creator team: %v", resolveErr)
+				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to resolve creator team"})
+			}
+			if resolvedTeamID != nil && *resolvedTeamID != "" {
+				teamID = resolvedTeamID
 			}
 		}
 	} else {
@@ -493,14 +502,65 @@ func (h *Handler) GetAgent(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent not found"})
 	}
 
+	teams, err := h.getAgentTeams(c.Request().Context(), id)
+	if err != nil {
+		c.Logger().Errorf("failed to fetch agent teams: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to fetch agent teams"})
+	}
+	teamIDs := make([]string, 0, len(teams))
+	for _, team := range teams {
+		teamIDs = append(teamIDs, team.ID)
+	}
+
 	// We can return a custom response or just the agent.
 	// Let's return a map to include team mission easily.
 	resp := map[string]interface{}{
 		"agent":        a,
 		"team_mission": teamMission,
+		"teams":        teams,
+		"team_ids":     teamIDs,
 	}
 
 	return c.JSON(http.StatusOK, resp)
+}
+
+func (h *Handler) resolveAgentSingleTeamID(ctx context.Context, agentID string) (*string, error) {
+	teams, err := h.getAgentTeams(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if len(teams) == 1 {
+		teamID := teams[0].ID
+		return &teamID, nil
+	}
+	return nil, nil
+}
+
+func (h *Handler) getAgentTeams(ctx context.Context, agentID string) ([]AgentTeamInfo, error) {
+	rows, err := h.DB.Query(ctx, `
+		SELECT DISTINCT t.id, t.name, t.mission
+		FROM teams t
+		WHERE t.id IN (
+			SELECT team_id FROM team_agents WHERE agent_id = $1
+			UNION
+			SELECT team_id FROM agents WHERE id = $1 AND team_id IS NOT NULL
+		)
+		ORDER BY t.id ASC
+	`, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	teams := []AgentTeamInfo{}
+	for rows.Next() {
+		var team AgentTeamInfo
+		if err := rows.Scan(&team.ID, &team.Name, &team.Mission); err != nil {
+			return nil, err
+		}
+		teams = append(teams, team)
+	}
+	return teams, rows.Err()
 }
 
 type UpdateAgentRequest struct {
