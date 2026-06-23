@@ -41,6 +41,7 @@ type Client struct {
 type Hub struct {
 	// Map of AgentID to active Client to enforce single connection rule
 	clients    map[string]*Client
+	connecting map[string]bool
 	register   chan *Client
 	unregister chan *Client
 	broadcast  chan []byte
@@ -52,6 +53,7 @@ type Hub struct {
 func NewHub(nc *nats.Conn, db *pgxpool.Pool) *Hub {
 	return &Hub{
 		clients:    make(map[string]*Client),
+		connecting: make(map[string]bool),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 		broadcast:  make(chan []byte, 256),
@@ -182,15 +184,19 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.mu.Lock()
-	if _, exists := h.clients[agentID]; exists {
+	if _, exists := h.clients[agentID]; exists || h.connecting[agentID] {
 		h.mu.Unlock()
 		http.Error(w, "conflict: active session already exists for this agent", http.StatusConflict)
 		return
 	}
+	h.connecting[agentID] = true
 	h.mu.Unlock()
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		h.mu.Lock()
+		delete(h.connecting, agentID)
+		h.mu.Unlock()
 		log.Printf("Failed to upgrade to WebSocket: %v", err)
 		return
 	}
@@ -200,6 +206,12 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 		AgentID: agentID,
 		send:    make(chan []byte, 256),
 	}
+
+	h.mu.Lock()
+	delete(h.connecting, agentID)
+	h.clients[agentID] = client
+	h.mu.Unlock()
+	log.Printf("New WebSocket client connected: %s", client.AgentID)
 
 	// Fetch history from DB and push to client before registration
 	// to ensure they get missed messages.
@@ -258,8 +270,6 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
-
-	h.register <- client
 
 	go client.writePump()
 	go client.readPump(h)
