@@ -429,11 +429,25 @@ func TestE2E_NORMAL_005_TaskWithToAndCC(t *testing.T) {
 	select {
 	case env := <-receivedMsg:
 		assert.Equal(t, "task", env.Type)
+		assert.NotEmpty(t, env.ID)
 		assert.Contains(t, env.To, "agent-b")
 		assert.Contains(t, env.To, "agent-c")
 		assert.Len(t, env.To, 2)
 		assert.Equal(t, []string{"agent-o"}, env.Observers)
 		assert.Equal(t, "agent-a", env.From)
+
+		var taskType, agentID string
+		var toAgents, observers []string
+		err := db.QueryRow(context.Background(), `
+			SELECT type, agent_id, to_agents, observers
+			FROM tasks
+			WHERE id = $1 AND thread_id = $2
+		`, env.ID, *env.ThreadID).Scan(&taskType, &agentID, &toAgents, &observers)
+		require.NoError(t, err)
+		assert.Equal(t, "task", taskType)
+		assert.Equal(t, "agent-a", agentID)
+		assert.ElementsMatch(t, []string{"agent-b", "agent-c"}, toAgents)
+		assert.Equal(t, []string{"agent-o"}, observers)
 	case <-time.After(3 * time.Second):
 		t.Fatal("Timed out waiting for NATS message")
 	}

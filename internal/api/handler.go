@@ -270,7 +270,8 @@ func (h *Handler) CreateThread(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "TEAM_ID_REQUIRED"})
 	}
 
-	// 4. Publish to NATS
+	// 4. Save to DB (tasks table)
+	taskID := ulid.Make().String()
 	taskPayload := models.TaskPayload{
 		Command:  req.Command,
 		InputDir: inputDir,
@@ -282,7 +283,18 @@ func (h *Handler) CreateThread(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal encoding error"})
 	}
 
+	_, err = h.DB.Exec(ctx, `
+		INSERT INTO tasks (id, thread_id, agent_id, type, to_agents, observers, payload)
+		VALUES ($1, $2, $3, 'task', $4, $5, $6)
+	`, taskID, threadID, req.CreatedByAgent, req.To, req.Observers, payloadBytes)
+	if err != nil {
+		c.Logger().Errorf("failed to insert initial task: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database task creation failed"})
+	}
+
+	// 5. Publish to NATS
 	envelope := models.MessageEnvelope{
+		ID:        taskID,
 		Type:      "task",
 		ThreadID:  &threadID,
 		From:      req.CreatedByAgent,
