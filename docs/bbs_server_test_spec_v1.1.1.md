@@ -294,8 +294,8 @@ restore はすべて replace であり merge ではない。
 | TEST-ROLE-001 | `TeamManager` がトップレベルスレッドを作成 | `201 Created`（作成可能） |
 | TEST-ROLE-002 | `Chef` がトップレベルスレッドを作成 | `403 Forbidden`（作成不可、TeamManagerのみ） |
 | TEST-ROLE-003 | `Worker` がトップレベル・サブスレッドを作成 | `403 Forbidden`（一律作成不可） |
-| TEST-CHEF-001 | `Chef` が自身が所属するチームの親スレッド下にサブスレッドを作成 | `201 Created`（作成可能） |
-| TEST-CHEF-002 | `Chef` が自身が所属していないチームの親スレッド下にサブスレッドを作成 | `403 Forbidden`（チームスコープ制限エラー） |
+| TEST-CHEF-001 | `Chef` が自身が所属するチームの親スレッド下にサブスレッドを作成 | `403 Forbidden`（作成不可、TeamManagerのみ） |
+| TEST-CHEF-002 | `Chef` が自身が所属していないチームの親スレッド下にサブスレッドを作成 | `403 Forbidden`（作成不可、TeamManagerのみ） |
 | TEST-INHERIT-001 | サブスレッド作成時にチームIDを省略 | 親スレッドの `team_id` を自動的に継承 |
 | TEST-INHERIT-002 | トップレベルスレッド作成時にチームIDを省略 | 作成エージェントが所属するチームの `team_id` を自動補足・紐付け |
 
@@ -326,4 +326,3 @@ restore はすべて replace であり merge ではない。
 | TEST-KPI-002 | チーム別 KPI 取得（`GET /teams/:id/kpi`） | 該当チーム内のすべてのスレッド・サブスレッドを再帰集計した統計情報が正しく返却（`200 OK`） |
 | TEST-KPI-003 | D3.js 用ネットワーク構造（`network_data`）の自動算出 | 送信メッセージ数を持つ `nodes` と、メンション回数を持つ `links`（`source`, `target`）が正しくシリアライズされて出力される |
 | TEST-ANALYTICS-001 | KPI分析 Next.js プロダクションビルド | `npm run build` が一切のエラーなく成功し、`/analytics` ページが正常生成される |
-

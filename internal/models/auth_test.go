@@ -76,3 +76,13 @@ func TestCheckPermission(t *testing.T) {
 		})
 	}
 }
+
+func TestThreadCreationPermissions(t *testing.T) {
+	assert.True(t, CanCreateTopLevelThread(RoleTeamManager))
+	assert.False(t, CanCreateTopLevelThread(RoleChef))
+	assert.False(t, CanCreateTopLevelThread(RoleNewWorker))
+
+	assert.True(t, CanCreateSubthread(RoleTeamManager))
+	assert.False(t, CanCreateSubthread(RoleChef))
+	assert.False(t, CanCreateSubthread(RoleNewWorker))
+}

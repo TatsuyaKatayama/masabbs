@@ -181,7 +181,7 @@ func (h *Handler) CreateThread(c echo.Context) error {
 	} else {
 		// Subthread
 		if !models.CanCreateSubthread(normalizedRole) {
-			return c.JSON(http.StatusForbidden, map[string]string{"error": "PERMISSION_DENIED: only TeamManager or Chef can create subthreads"})
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "PERMISSION_DENIED: only TeamManager can create subthreads"})
 		}
 
 		// Inherit parent's team_id if not explicitly provided

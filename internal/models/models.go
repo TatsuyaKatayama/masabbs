@@ -32,7 +32,7 @@ func CanCreateTopLevelThread(role string) bool {
 
 // CanCreateSubthread returns true if the role is allowed to create subthreads.
 func CanCreateSubthread(role string) bool {
-	return role == RoleManager || role == RoleTeamManager || role == RoleChef
+	return role == RoleManager || role == RoleTeamManager
 }
 
 // NormalizeRole maps old roles or variations to new canonical roles.

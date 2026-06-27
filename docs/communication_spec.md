@@ -222,7 +222,7 @@ message payload では相対 path/prefix を使う。
 
 | Method | Path | 説明 |
 |---|---|---|
-| POST | `/api/v1/threads` | メンション必須のスレッド・サブスレッド作成。作成権限チェック（TeamManager/Chef）を適用 |
+| POST | `/api/v1/threads` | メンション必須のスレッド・サブスレッド作成。作成権限チェック（TeamManager）を適用 |
 | POST | `/api/v1/threads/:id/messages` | 本文のメンションから `to_agents` を自動解決し、NATS配信代行およびDB保存を行う |
 | POST | `/api/v1/threads/:id/reflection-requests` | 振り返り専用サブスレッドの起立要求を NATS にパブリッシュ |
 | POST | `/api/v1/reflections` | チーム内エージェントへの相互評価の登録・更新（Upsert形式） |
@@ -254,4 +254,3 @@ message payload では相対 path/prefix を使う。
 ```
 *   `nodes[].count`: 各エージェントが送信した総メッセージ数（円の大きさにマッピング）
 *   `links[].value`: 該当する発信者から受信者へのメンション回数の総数（矢印線の太さにマッピング）
-
